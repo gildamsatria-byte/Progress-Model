@@ -1,0 +1,1542 @@
+<!doctype html>
+<html lang="id">
+<head>
+<title>BIM Progress Viewer</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #E7ECEF;
+  --panel: #FBFCFC;
+  --panel-2: #F1F4F6;
+  --ink: #17202A;
+  --muted: #58656F;
+  --line: #D2D9DF;
+  --accent: #1F5BD8;
+  --accent-ink: #FFFFFF;
+  --finish: #12906A;
+  --pending: #AEB8C1;
+  --unscheduled: #C98A1A;
+  --nowbs: #8C98A3;
+  --danger: #B3372B;
+  --viewport: #DCE2E7;
+  --grid: #BFC8D0;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E1318; --panel: #151C23; --panel-2: #1B232B; --ink: #E2E8EE; --muted: #8E9BA7;
+    --line: #27323C; --accent: #6E9BFF; --accent-ink: #0B1220; --finish: #2EC18C; --pending: #4A5663;
+    --unscheduled: #E0A83E; --nowbs: #66727E; --danger: #F07A6C; --viewport: #10161C; --grid: #26313B;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E1318; --panel: #151C23; --panel-2: #1B232B; --ink: #E2E8EE; --muted: #8E9BA7;
+  --line: #27323C; --accent: #6E9BFF; --accent-ink: #0B1220; --finish: #2EC18C; --pending: #4A5663;
+  --unscheduled: #E0A83E; --nowbs: #66727E; --danger: #F07A6C; --viewport: #10161C; --grid: #26313B;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 var(--sans);
+  display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+}
+button, input, select { font: inherit; color: inherit; }
+.mono { font-family: var(--mono); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* top bar */
+.topbar {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.brand { display: flex; align-items: baseline; gap: 10px; margin-right: auto; }
+.brand h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+.brand span { font-size: 12px; color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--panel-2); }
+.seg button {
+  border: 0; background: transparent; padding: 5px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); font-weight: 500;
+}
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
+.seg button:disabled { opacity: 0.5; cursor: default; }
+.headline { font-size: 13px; color: var(--muted); }
+.headline b { color: var(--finish); font-weight: 600; }
+
+/* layout */
+.main { display: grid; grid-template-columns: 340px 1fr; min-height: 0; }
+.side { overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+.sec { padding: 16px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+.sec h2 {
+  margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.sec h2 .step {
+  font-family: var(--mono); width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center;
+  background: var(--ink); color: var(--panel); font-size: 10px; letter-spacing: 0;
+}
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn {
+  border: 1px solid var(--line); background: var(--panel-2); padding: 7px 12px; border-radius: 8px; cursor: pointer; font-weight: 500;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { font-size: 12px; color: var(--muted); margin: 0; }
+.hint.warn { color: var(--unscheduled); }
+label.field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+select, input[type="text"] {
+  width: 100%; border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; background: var(--panel); color: var(--ink);
+}
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+.check input { margin-top: 3px; }
+.file-tag { font-size: 12px; font-family: var(--mono); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; word-break: break-all; }
+
+/* model list */
+.models { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.models li {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center;
+  padding: 7px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2);
+}
+.models .mname { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.models .mstat { font-size: 11px; color: var(--muted); }
+.models button { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; padding: 2px 4px; }
+.models button:hover { color: var(--danger); }
+
+/* summary */
+.bar { height: 10px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; display: flex; }
+.bar i { display: block; height: 100%; }
+.legend { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.legend li { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; }
+.sw { width: 12px; height: 12px; border-radius: 3px; }
+.sw.finish { background: var(--finish); }
+.sw.pending { background: var(--pending); }
+.sw.unscheduled { background: var(--unscheduled); }
+.sw.nowbs { background: transparent; border: 1.5px dashed var(--nowbs); }
+.bigpct { font-size: 28px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.bigpct small { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+
+/* report */
+details { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+details summary { cursor: pointer; padding: 7px 10px; font-size: 13px; display: flex; justify-content: space-between; gap: 8px; }
+details summary .cnt { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+details .codes { padding: 0 10px 10px; display: flex; flex-wrap: wrap; gap: 4px; max-height: 180px; overflow-y: auto; }
+.code { font-family: var(--mono); font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--panel); border: 1px solid var(--line); }
+
+/* viewport */
+.viewport { position: relative; min-height: 0; background: var(--viewport); overflow: hidden; }
+.viewport canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.overlay {
+  position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; pointer-events: none;
+}
+.overlay > div {
+  pointer-events: auto; max-width: 440px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 20px; display: grid; gap: 12px; box-shadow: 0 8px 30px rgb(0 0 0 / 0.08);
+}
+.overlay h3 { margin: 0; font-size: 18px; text-wrap: balance; }
+.overlay p { margin: 0; color: var(--muted); }
+.overlay ol { margin: 0; padding-left: 20px; color: var(--muted); display: grid; gap: 4px; }
+.spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+.loading-row { display: flex; gap: 10px; align-items: center; }
+.err { color: var(--danger); white-space: pre-wrap; font-size: 13px; }
+
+.info {
+  position: absolute; right: 12px; bottom: 12px; width: min(340px, calc(100% - 24px)); max-height: 60%;
+  overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12); display: grid; gap: 8px; font-size: 13px;
+}
+.info header { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+.info h4 { margin: 0; font-size: 14px; }
+.info .cls { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.info dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+.info dt { color: var(--muted); font-size: 12px; }
+.info dd { margin: 0; word-break: break-word; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+.pill.finish { background: color-mix(in srgb, var(--finish) 16%, transparent); color: var(--finish); border-color: color-mix(in srgb, var(--finish) 40%, transparent); }
+.pill.pending { background: color-mix(in srgb, var(--pending) 25%, transparent); color: var(--ink); border-color: var(--pending); }
+.pill.unscheduled { background: color-mix(in srgb, var(--unscheduled) 16%, transparent); color: var(--unscheduled); border-color: color-mix(in srgb, var(--unscheduled) 40%, transparent); }
+.pill.nowbs { color: var(--muted); border: 1px dashed var(--nowbs); }
+.close { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; }
+.viewhelp { position: absolute; left: 12px; bottom: 12px; font-size: 11px; color: var(--muted); background: color-mix(in srgb, var(--panel) 80%, transparent); padding: 4px 8px; border-radius: 6px; }
+.fitbtn { position: absolute; left: 12px; top: 12px; }
+.dropping .viewport::after {
+  content: "Lepaskan file IFC / CSV di sini"; position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 12px;
+  display: grid; place-items: center; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+@media (max-width: 820px) {
+  body { overflow: auto; grid-template-rows: auto auto; }
+  .main { grid-template-columns: 1fr; }
+  .viewport { height: 60vh; order: -1; }
+  .side { border-right: 0; overflow: visible; }
+}
+</style>
+
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><h1>BIM Progress Viewer</h1><span>PoC · Fase 1</span></div>
+  <div class="seg" role="group" aria-label="Mode tampilan">
+    <button id="mode-finish" type="button" aria-pressed="true">Hanya finish</button>
+    <button id="mode-all" type="button" aria-pressed="false">Semua status</button>
+  </div>
+  <div class="headline num" id="headline">Belum ada model dimuat</div>
+</header>
+
+<div class="main">
+  <aside class="side">
+    <section class="sec">
+      <h2><span class="step">1</span>Model IFC</h2>
+      <div class="row">
+        <button class="btn primary" id="btn-folder" type="button">Pilih folder proyek</button>
+        <button class="btn" id="btn-ifc" type="button">Pilih file IFC</button>
+      </div>
+      <p class="hint">Folder Google Drive / OneDrive yang tersinkron di komputer bisa dipilih langsung. Semua file <span class="mono">.ifc</span> di dalamnya digabung, dan file <span class="mono">.csv</span> di folder yang sama ikut dimuat.</p>
+      <ul class="models" id="models"></ul>
+      <input type="file" id="in-folder" webkitdirectory multiple hidden>
+      <input type="file" id="in-ifc" accept=".ifc" multiple hidden>
+    </section>
+
+    <section class="sec">
+      <h2><span class="step">2</span>Jadwal MS Project (CSV)</h2>
+      <div class="row">
+        <button class="btn" id="btn-csv" type="button">Pilih file CSV</button>
+      </div>
+      <input type="file" id="in-csv" accept=".csv,.txt" hidden>
+      <div id="csv-name" class="file-tag" hidden></div>
+      <div class="grid2">
+        <label class="field">Kolom WBS<select id="col-wbs" disabled></select></label>
+        <label class="field">Kolom status<select id="col-status" disabled></select></label>
+      </div>
+      <label class="field">Nilai yang dianggap finish (pisahkan dengan koma)
+        <input type="text" id="finish-values">
+      </label>
+      <label class="check"><input type="checkbox" id="inherit"> <span>Elemen ikut finish bila WBS induknya finish (mis. <span class="mono">1.2</span> finish → <span class="mono">1.2.x</span> ikut)</span></label>
+    </section>
+
+    <section class="sec">
+      <h2><span class="step">3</span>Properti WBS di IFC</h2>
+      <div class="row" style="flex-wrap:nowrap">
+        <input type="text" id="prop-name" aria-label="Nama properti WBS" value="WBS">
+        <button class="btn" id="btn-prop" type="button">Terapkan</button>
+      </div>
+      <p class="hint" id="prop-hint">Nama parameter di model yang berisi kode WBS. Huruf besar/kecil diabaikan.</p>
+    </section>
+
+    <section class="sec">
+      <h2>Ringkasan</h2>
+      <div class="bigpct" id="pct">–<small></small></div>
+      <div class="bar" id="bar" aria-hidden="true"></div>
+      <ul class="legend num" id="legend"></ul>
+    </section>
+
+    <section class="sec">
+      <h2>Laporan pencocokan</h2>
+      <div id="report"><p class="hint">Muat model dan CSV untuk melihat WBS yang tidak cocok.</p></div>
+    </section>
+  </aside>
+
+  <div class="viewport" id="viewport">
+    <button class="btn fitbtn" id="btn-fit" type="button" hidden>Paskan tampilan</button>
+    <div class="viewhelp" id="viewhelp" hidden>Putar: seret · Geser: klik kanan · Zoom: gulir · Klik elemen untuk detail</div>
+    <div class="overlay" id="overlay">
+      <div id="overlay-card">
+        <h3>Lihat progres proyek langsung di model</h3>
+        <ol>
+          <li>Pilih folder berisi file IFC (dan CSV jadwal).</li>
+          <li>Pilih CSV hasil export MS Project bila belum ikut termuat.</li>
+          <li>Hanya elemen yang WBS-nya berstatus finish yang ditampilkan.</li>
+        </ol>
+        <div class="row">
+          <button class="btn primary" id="btn-sample" type="button">Coba dengan data contoh</button>
+        </div>
+        <p class="hint">Data contoh: gedung 2 lantai (model struktur + arsitektur) dan jadwal MS Project 17 tugas. File juga bisa diseret ke area ini.</p>
+      </div>
+    </div>
+    <div class="info" id="info" hidden></div>
+  </div>
+</div>
+
+<script type="text/plain" id="sample-str">ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('ViewDefinition [ReferenceView]'),'2;1');
+FILE_NAME('STR_Gedung-Contoh.ifc','2026-09-25T00:00:00',('BIM Progress Viewer'),(''),'sample','sample','');
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCCARTESIANPOINT((0.,0.,0.));
+#2=IFCDIRECTION((0.,0.,1.));
+#3=IFCDIRECTION((1.,0.,0.));
+#4=IFCAXIS2PLACEMENT3D(#1,#2,#3);
+#5=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,#4,$);
+#6=IFCGEOMETRICREPRESENTATIONSUBCONTEXT('Body','Model',*,*,*,*,#5,$,.MODEL_VIEW.,$);
+#7=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#8=IFCUNITASSIGNMENT((#7));
+#9=IFCPROJECT('2Jo69Ck7R4Btr8UBs7FS7o',$,'Gedung Contoh',$,$,$,$,(#5),#8);
+#10=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#11=IFCAXIS2PLACEMENT3D(#10,$,$);
+#12=IFCLOCALPLACEMENT($,#11);
+#13=IFCSITE('0S5HbrIFdNDOlC87Q$sexw',$,'Lokasi',$,$,#12,$,$,.ELEMENT.,$,$,$,$,$);
+#14=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#15=IFCAXIS2PLACEMENT3D(#14,$,$);
+#16=IFCLOCALPLACEMENT(#12,#15);
+#17=IFCBUILDING('2cVNVAc$hva9FrLhJ_r59e',$,'Gedung',$,$,#16,$,$,.ELEMENT.,$,$,$);
+#18=IFCRELAGGREGATES('2i$w8BYy87dvani2xjLE$7',$,$,$,#9,(#13));
+#19=IFCRELAGGREGATES('1aGVoo$ALvpZHtZrjmTJAM',$,$,$,#13,(#17));
+#20=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#21=IFCAXIS2PLACEMENT3D(#20,$,$);
+#22=IFCLOCALPLACEMENT(#16,#21);
+#23=IFCBUILDINGSTOREY('1TT1_NXa0IrleG6woopoDz',$,'Lantai 1',$,$,#22,$,$,.ELEMENT.,0.0);
+#24=IFCCARTESIANPOINT((0.0,0.0,3.5));
+#25=IFCAXIS2PLACEMENT3D(#24,$,$);
+#26=IFCLOCALPLACEMENT(#16,#25);
+#27=IFCBUILDINGSTOREY('37O8QuKEh6D0JCk39QmJWi',$,'Lantai 2',$,$,#26,$,$,.ELEMENT.,3.5);
+#28=IFCCARTESIANPOINT((0.0,0.0,7.0));
+#29=IFCAXIS2PLACEMENT3D(#28,$,$);
+#30=IFCLOCALPLACEMENT(#16,#29);
+#31=IFCBUILDINGSTOREY('2yFE_xzzdAIDhXzK2QkI3c',$,'Atap',$,$,#30,$,$,.ELEMENT.,7.0);
+#32=IFCRELAGGREGATES('0XkLjSgSOUpTP$j33ZyXOi',$,$,$,#17,(#23,#27,#31));
+#33=IFCCARTESIANPOINT((0.,0.));
+#34=IFCCARTESIANPOINT((6.0,4.0));
+#35=IFCAXIS2PLACEMENT2D(#34,$);
+#36=IFCRECTANGLEPROFILEDEF(.AREA.,$,#35,12.0,8.0);
+#37=IFCEXTRUDEDAREASOLID(#36,#4,#2,0.2);
+#38=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#37));
+#39=IFCPRODUCTDEFINITIONSHAPE($,$,(#38));
+#40=IFCCARTESIANPOINT((0.0,0.0,-0.2));
+#41=IFCAXIS2PLACEMENT3D(#40,$,$);
+#42=IFCLOCALPLACEMENT(#22,#41);
+#43=IFCSLAB('3ikASDTyPhQz0ziAFnPzMt',$,'Pelat Lantai 1',$,$,#42,#39,$,$);
+#44=IFCCARTESIANPOINT((0.2,0.2));
+#45=IFCAXIS2PLACEMENT2D(#44,$);
+#46=IFCRECTANGLEPROFILEDEF(.AREA.,$,#45,0.4,0.4);
+#47=IFCEXTRUDEDAREASOLID(#46,#4,#2,3.3);
+#48=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#47));
+#49=IFCPRODUCTDEFINITIONSHAPE($,$,(#48));
+#50=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#51=IFCAXIS2PLACEMENT3D(#50,$,$);
+#52=IFCLOCALPLACEMENT(#22,#51);
+#53=IFCCOLUMN('2BoxpAKLG3JxIyiJG21DHt',$,'Kolom K1A',$,$,#52,#49,$,$);
+#54=IFCCARTESIANPOINT((0.2,0.2));
+#55=IFCAXIS2PLACEMENT2D(#54,$);
+#56=IFCRECTANGLEPROFILEDEF(.AREA.,$,#55,0.4,0.4);
+#57=IFCEXTRUDEDAREASOLID(#56,#4,#2,3.3);
+#58=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#57));
+#59=IFCPRODUCTDEFINITIONSHAPE($,$,(#58));
+#60=IFCCARTESIANPOINT((0.0,7.6,0.0));
+#61=IFCAXIS2PLACEMENT3D(#60,$,$);
+#62=IFCLOCALPLACEMENT(#22,#61);
+#63=IFCCOLUMN('1R3WRbUfXrG7jwrGJ2uN0J',$,'Kolom K1B',$,$,#62,#59,$,$);
+#64=IFCCARTESIANPOINT((0.2,0.2));
+#65=IFCAXIS2PLACEMENT2D(#64,$);
+#66=IFCRECTANGLEPROFILEDEF(.AREA.,$,#65,0.4,0.4);
+#67=IFCEXTRUDEDAREASOLID(#66,#4,#2,3.3);
+#68=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#67));
+#69=IFCPRODUCTDEFINITIONSHAPE($,$,(#68));
+#70=IFCCARTESIANPOINT((5.8,0.0,0.0));
+#71=IFCAXIS2PLACEMENT3D(#70,$,$);
+#72=IFCLOCALPLACEMENT(#22,#71);
+#73=IFCCOLUMN('1IyF7fzD7VOZ5Cv38ufPZv',$,'Kolom K2A',$,$,#72,#69,$,$);
+#74=IFCCARTESIANPOINT((0.2,0.2));
+#75=IFCAXIS2PLACEMENT2D(#74,$);
+#76=IFCRECTANGLEPROFILEDEF(.AREA.,$,#75,0.4,0.4);
+#77=IFCEXTRUDEDAREASOLID(#76,#4,#2,3.3);
+#78=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#77));
+#79=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#80=IFCCARTESIANPOINT((5.8,7.6,0.0));
+#81=IFCAXIS2PLACEMENT3D(#80,$,$);
+#82=IFCLOCALPLACEMENT(#22,#81);
+#83=IFCCOLUMN('3VXPvHrFoue9Us9RcFJkIW',$,'Kolom K2B',$,$,#82,#79,$,$);
+#84=IFCCARTESIANPOINT((0.2,0.2));
+#85=IFCAXIS2PLACEMENT2D(#84,$);
+#86=IFCRECTANGLEPROFILEDEF(.AREA.,$,#85,0.4,0.4);
+#87=IFCEXTRUDEDAREASOLID(#86,#4,#2,3.3);
+#88=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#87));
+#89=IFCPRODUCTDEFINITIONSHAPE($,$,(#88));
+#90=IFCCARTESIANPOINT((11.6,0.0,0.0));
+#91=IFCAXIS2PLACEMENT3D(#90,$,$);
+#92=IFCLOCALPLACEMENT(#22,#91);
+#93=IFCCOLUMN('1xSCo_KSKtphrPjeBk2hwu',$,'Kolom K3A',$,$,#92,#89,$,$);
+#94=IFCCARTESIANPOINT((0.2,0.2));
+#95=IFCAXIS2PLACEMENT2D(#94,$);
+#96=IFCRECTANGLEPROFILEDEF(.AREA.,$,#95,0.4,0.4);
+#97=IFCEXTRUDEDAREASOLID(#96,#4,#2,3.3);
+#98=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#97));
+#99=IFCPRODUCTDEFINITIONSHAPE($,$,(#98));
+#100=IFCCARTESIANPOINT((11.6,7.6,0.0));
+#101=IFCAXIS2PLACEMENT3D(#100,$,$);
+#102=IFCLOCALPLACEMENT(#22,#101);
+#103=IFCCOLUMN('0ngb8ETDAXY5NYGsXpJ$fB',$,'Kolom K3B',$,$,#102,#99,$,$);
+#104=IFCCARTESIANPOINT((6.0,4.0));
+#105=IFCAXIS2PLACEMENT2D(#104,$);
+#106=IFCRECTANGLEPROFILEDEF(.AREA.,$,#105,12.0,8.0);
+#107=IFCEXTRUDEDAREASOLID(#106,#4,#2,0.2);
+#108=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#107));
+#109=IFCPRODUCTDEFINITIONSHAPE($,$,(#108));
+#110=IFCCARTESIANPOINT((0.0,0.0,-0.2));
+#111=IFCAXIS2PLACEMENT3D(#110,$,$);
+#112=IFCLOCALPLACEMENT(#26,#111);
+#113=IFCSLAB('27Ns9Y2BXAS8XFw1hrYG5U',$,'Pelat Lantai 2',$,$,#112,#109,$,$);
+#114=IFCCARTESIANPOINT((0.2,0.2));
+#115=IFCAXIS2PLACEMENT2D(#114,$);
+#116=IFCRECTANGLEPROFILEDEF(.AREA.,$,#115,0.4,0.4);
+#117=IFCEXTRUDEDAREASOLID(#116,#4,#2,3.3);
+#118=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#117));
+#119=IFCPRODUCTDEFINITIONSHAPE($,$,(#118));
+#120=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#121=IFCAXIS2PLACEMENT3D(#120,$,$);
+#122=IFCLOCALPLACEMENT(#26,#121);
+#123=IFCCOLUMN('0KX6NPddQbvMYi2W412OyV',$,'Kolom K1A',$,$,#122,#119,$,$);
+#124=IFCCARTESIANPOINT((0.2,0.2));
+#125=IFCAXIS2PLACEMENT2D(#124,$);
+#126=IFCRECTANGLEPROFILEDEF(.AREA.,$,#125,0.4,0.4);
+#127=IFCEXTRUDEDAREASOLID(#126,#4,#2,3.3);
+#128=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#127));
+#129=IFCPRODUCTDEFINITIONSHAPE($,$,(#128));
+#130=IFCCARTESIANPOINT((0.0,7.6,0.0));
+#131=IFCAXIS2PLACEMENT3D(#130,$,$);
+#132=IFCLOCALPLACEMENT(#26,#131);
+#133=IFCCOLUMN('3Dt$odRThPHpi6G19WtK7A',$,'Kolom K1B',$,$,#132,#129,$,$);
+#134=IFCCARTESIANPOINT((0.2,0.2));
+#135=IFCAXIS2PLACEMENT2D(#134,$);
+#136=IFCRECTANGLEPROFILEDEF(.AREA.,$,#135,0.4,0.4);
+#137=IFCEXTRUDEDAREASOLID(#136,#4,#2,3.3);
+#138=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#137));
+#139=IFCPRODUCTDEFINITIONSHAPE($,$,(#138));
+#140=IFCCARTESIANPOINT((5.8,0.0,0.0));
+#141=IFCAXIS2PLACEMENT3D(#140,$,$);
+#142=IFCLOCALPLACEMENT(#26,#141);
+#143=IFCCOLUMN('3aVb5wNKYv0XkgfV4dRjN0',$,'Kolom K2A',$,$,#142,#139,$,$);
+#144=IFCCARTESIANPOINT((0.2,0.2));
+#145=IFCAXIS2PLACEMENT2D(#144,$);
+#146=IFCRECTANGLEPROFILEDEF(.AREA.,$,#145,0.4,0.4);
+#147=IFCEXTRUDEDAREASOLID(#146,#4,#2,3.3);
+#148=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#147));
+#149=IFCPRODUCTDEFINITIONSHAPE($,$,(#148));
+#150=IFCCARTESIANPOINT((5.8,7.6,0.0));
+#151=IFCAXIS2PLACEMENT3D(#150,$,$);
+#152=IFCLOCALPLACEMENT(#26,#151);
+#153=IFCCOLUMN('2mAyZPV0BXBIp5o2ccTAJn',$,'Kolom K2B',$,$,#152,#149,$,$);
+#154=IFCCARTESIANPOINT((0.2,0.2));
+#155=IFCAXIS2PLACEMENT2D(#154,$);
+#156=IFCRECTANGLEPROFILEDEF(.AREA.,$,#155,0.4,0.4);
+#157=IFCEXTRUDEDAREASOLID(#156,#4,#2,3.3);
+#158=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#157));
+#159=IFCPRODUCTDEFINITIONSHAPE($,$,(#158));
+#160=IFCCARTESIANPOINT((11.6,0.0,0.0));
+#161=IFCAXIS2PLACEMENT3D(#160,$,$);
+#162=IFCLOCALPLACEMENT(#26,#161);
+#163=IFCCOLUMN('2$JaI5sH2TA35HkDmv62V_',$,'Kolom K3A',$,$,#162,#159,$,$);
+#164=IFCCARTESIANPOINT((0.2,0.2));
+#165=IFCAXIS2PLACEMENT2D(#164,$);
+#166=IFCRECTANGLEPROFILEDEF(.AREA.,$,#165,0.4,0.4);
+#167=IFCEXTRUDEDAREASOLID(#166,#4,#2,3.3);
+#168=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#167));
+#169=IFCPRODUCTDEFINITIONSHAPE($,$,(#168));
+#170=IFCCARTESIANPOINT((11.6,7.6,0.0));
+#171=IFCAXIS2PLACEMENT3D(#170,$,$);
+#172=IFCLOCALPLACEMENT(#26,#171);
+#173=IFCCOLUMN('20w8B8yW9XUQTw$m9za5P9',$,'Kolom K3B',$,$,#172,#169,$,$);
+#174=IFCCARTESIANPOINT((6.0,4.0));
+#175=IFCAXIS2PLACEMENT2D(#174,$);
+#176=IFCRECTANGLEPROFILEDEF(.AREA.,$,#175,12.0,8.0);
+#177=IFCEXTRUDEDAREASOLID(#176,#4,#2,0.2);
+#178=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#177));
+#179=IFCPRODUCTDEFINITIONSHAPE($,$,(#178));
+#180=IFCCARTESIANPOINT((0.0,0.0,-0.2));
+#181=IFCAXIS2PLACEMENT3D(#180,$,$);
+#182=IFCLOCALPLACEMENT(#30,#181);
+#183=IFCSLAB('1gWcH1z7_YCR_baxxxFPdA',$,'Pelat Atap',$,$,#182,#179,$,$);
+#184=IFCRELCONTAINEDINSPATIALSTRUCTURE('32bw9vYnQQ9BIXkGZEkT$_',$,$,$,(#43,#53,#63,#73,#83,#93,#103),#23);
+#185=IFCRELCONTAINEDINSPATIALSTRUCTURE('33K0_vpcIrimeFg0fhoFP1',$,$,$,(#113,#123,#133,#143,#153,#163,#173),#27);
+#186=IFCRELCONTAINEDINSPATIALSTRUCTURE('2Wl8on9ksZ6ZD6aJVYteOl',$,$,$,(#183),#31);
+#187=IFCPROPERTYSINGLEVALUE('WBS',$,IFCLABEL('1.1.1'),$);
+#188=IFCPROPERTYSET('33pQA6qvHa_6GLyrhacWXp',$,'Jadwal',$,(#187));
+#189=IFCRELDEFINESBYPROPERTIES('1czoFLK9Q$SvgvsHOVBMhB',$,$,$,(#43),#188);
+#190=IFCPROPERTYSINGLEVALUE('WBS',$,IFCLABEL('1.2.1'),$);
+#191=IFCPROPERTYSET('2UlXP2qnqQmYh7$ZkGRBYV',$,'Jadwal',$,(#190));
+#192=IFCRELDEFINESBYPROPERTIES('3pvtd2G4sy_09oxvVDSJJD',$,$,$,(#53,#63,#73,#83,#93,#103),#191);
+#193=IFCPROPERTYSINGLEVALUE('WBS',$,IFCLABEL('1.3.1'),$);
+#194=IFCPROPERTYSET('3A50GT4cGWtEC9cOnXS01c',$,'Jadwal',$,(#193));
+#195=IFCRELDEFINESBYPROPERTIES('3ZeVyUV3qd72O$rAWTslT$',$,$,$,(#113),#194);
+#196=IFCPROPERTYSINGLEVALUE('WBS',$,IFCLABEL('1.4.1'),$);
+#197=IFCPROPERTYSET('0hrkoP0b8Q$PdOTxSXbD$N',$,'Jadwal',$,(#196));
+#198=IFCRELDEFINESBYPROPERTIES('1_r7Io6R3Ir67NoveEALgO',$,$,$,(#123,#133,#143,#153,#163,#173),#197);
+#199=IFCPROPERTYSINGLEVALUE('WBS',$,IFCLABEL('1.5.1'),$);
+#200=IFCPROPERTYSET('1x4dmlguLD0AZAirFQmjdt',$,'Jadwal',$,(#199));
+#201=IFCRELDEFINESBYPROPERTIES('06yPlvOfky3qVp5m4x87WO',$,$,$,(#183),#200);
+ENDSEC;
+END-ISO-10303-21;
+</script>
+<script type="text/plain" id="sample-ars">ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('ViewDefinition [ReferenceView]'),'2;1');
+FILE_NAME('ARS_Gedung-Contoh.ifc','2026-09-25T00:00:00',('BIM Progress Viewer'),(''),'sample','sample','');
+FILE_SCHEMA(('IFC4'));
+ENDSEC;
+DATA;
+#1=IFCCARTESIANPOINT((0.,0.,0.));
+#2=IFCDIRECTION((0.,0.,1.));
+#3=IFCDIRECTION((1.,0.,0.));
+#4=IFCAXIS2PLACEMENT3D(#1,#2,#3);
+#5=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,#4,$);
+#6=IFCGEOMETRICREPRESENTATIONSUBCONTEXT('Body','Model',*,*,*,*,#5,$,.MODEL_VIEW.,$);
+#7=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);
+#8=IFCUNITASSIGNMENT((#7));
+#9=IFCPROJECT('0hkYg5XeZc083TDyxnWt$G',$,'Gedung Contoh',$,$,$,$,(#5),#8);
+#10=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#11=IFCAXIS2PLACEMENT3D(#10,$,$);
+#12=IFCLOCALPLACEMENT($,#11);
+#13=IFCSITE('3N1cJUfewkAPoKVq84zfKs',$,'Lokasi',$,$,#12,$,$,.ELEMENT.,$,$,$,$,$);
+#14=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#15=IFCAXIS2PLACEMENT3D(#14,$,$);
+#16=IFCLOCALPLACEMENT(#12,#15);
+#17=IFCBUILDING('09XAQCr$vMTHrwUFbbZYlW',$,'Gedung',$,$,#16,$,$,.ELEMENT.,$,$,$);
+#18=IFCRELAGGREGATES('2PuVNVUJaOf8oWVTCx4D0y',$,$,$,#9,(#13));
+#19=IFCRELAGGREGATES('1vl5bTF6OO9lMvX0DiR4lh',$,$,$,#13,(#17));
+#20=IFCCARTESIANPOINT((0.0,0.0,0.0));
+#21=IFCAXIS2PLACEMENT3D(#20,$,$);
+#22=IFCLOCALPLACEMENT(#16,#21);
+#23=IFCBUILDINGSTOREY('15QW4Q1fqlNd9Q4$z8qCoJ',$,'Lantai 1',$,$,#22,$,$,.ELEMENT.,0.0);
+#24=IFCCARTESIANPOINT((0.0,0.0,3.5));
+#25=IFCAXIS2PLACEMENT3D(#24,$,$);
+#26=IFCLOCALPLACEMENT(#16,#25);
+#27=IFCBUILDINGSTOREY('0KoYqadr6djrr2kPopQ0tK',$,'Lantai 2',$,$,#26,$,$,.ELEMENT.,3.5);
+#28=IFCCARTESIANPOINT((0.0,0.0,7.0));
+#29=IFCAXIS2PLACEMENT3D(#28,$,$);
+#30=IFCLOCALPLACEMENT(#16,#29);
+#31=IFCBUILDINGSTOREY('3EBpkwKG16IoBlLIiaKL8D',$,'Atap',$,$,#30,$,$,.ELEMENT.,7.0);
+#32=IFCRELAGGREGATES('3_PcG5ze6nBKSpPyNR5pKn',$,$,$,#17,(#23,#27,#31));
+#33=IFCCARTESIANPOINT((0.,0.));
+#34=IFCCARTESIANPOINT((5.6,0.075));
+#35=IFCAXIS2PLACEMENT2D(#34,$);
+#36=IFCRECTANGLEPROFILEDEF(.AREA.,$,#35,11.2,0.15);
+#37=IFCEXTRUDEDAREASOLID(#36,#4,#2,3.3);
+#38=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#37));
+#39=IFCPRODUCTDEFINITIONSHAPE($,$,(#38));
+#40=IFCCARTESIANPOINT((0.4,7.7,0.0));
+#41=IFCAXIS2PLACEMENT3D(#40,$,$);
+#42=IFCLOCALPLACEMENT(#22,#41);
+#43=IFCWALL('2FJVO54fFnwdrdVsnlvuM2',$,'Dinding Utara',$,$,#42,#39,$,$);
+#44=IFCCARTESIANPOINT((5.6,0.075));
+#45=IFCAXIS2PLACEMENT2D(#44,$);
+#46=IFCRECTANGLEPROFILEDEF(.AREA.,$,#45,11.2,0.15);
+#47=IFCEXTRUDEDAREASOLID(#46,#4,#2,3.3);
+#48=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#47));
+#49=IFCPRODUCTDEFINITIONSHAPE($,$,(#48));
+#50=IFCCARTESIANPOINT((0.4,0.15,0.0));
+#51=IFCAXIS2PLACEMENT3D(#50,$,$);
+#52=IFCLOCALPLACEMENT(#22,#51);
+#53=IFCWALL('0_xUvwMypD8GjtkBu55GAe',$,'Dinding Selatan',$,$,#52,#49,$,$);
+#54=IFCCARTESIANPOINT((0.075,3.6));
+#55=IFCAXIS2PLACEMENT2D(#54,$);
+#56=IFCRECTANGLEPROFILEDEF(.AREA.,$,#55,0.15,7.2);
+#57=IFCEXTRUDEDAREASOLID(#56,#4,#2,3.3);
+#58=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#57));
+#59=IFCPRODUCTDEFINITIONSHAPE($,$,(#58));
+#60=IFCCARTESIANPOINT((0.1,0.4,0.0));
+#61=IFCAXIS2PLACEMENT3D(#60,$,$);
+#62=IFCLOCALPLACEMENT(#22,#61);
+#63=IFCWALL('06mH38EOG_aLS8iWKfZwIW',$,'Dinding Barat',$,$,#62,#59,$,$);
+#64=IFCCARTESIANPOINT((0.075,3.6));
+#65=IFCAXIS2PLACEMENT2D(#64,$);
+#66=IFCRECTANGLEPROFILEDEF(.AREA.,$,#65,0.15,7.2);
+#67=IFCEXTRUDEDAREASOLID(#66,#4,#2,3.3);
+#68=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#67));
+#69=IFCPRODUCTDEFINITIONSHAPE($,$,(#68));
+#70=IFCCARTESIANPOINT((11.75,0.4,0.0));
+#71=IFCAXIS2PLACEMENT3D(#70,$,$);
+#72=IFCLOCALPLACEMENT(#22,#71);
+#73=IFCWALL('3QXUel4PNpKZfmLXE6kvDW',$,'Dinding Timur',$,$,#72,#69,$,$);
+#74=IFCCARTESIANPOINT((5.6,0.075));
+#75=IFCAXIS2PLACEMENT2D(#74,$);
+#76=IFCRECTANGLEPROFILEDEF(.AREA.,$,#75,11.2,0.15);
+#77=IFCEXTRUDEDAREASOLID(#76,#4,#2,3.3);
+#78=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#77));
+#79=IFCPRODUCTDEFINITIONSHAPE($,$,(#78));
+#80=IFCCARTESIANPOINT((0.4,7.7,0.0));
+#81=IFCAXIS2PLACEMENT3D(#80,$,$);
+#82=IFCLOCALPLACEMENT(#26,#81);
+#83=IFCWALL('3lXmlIkgAuTM6bWde04SJb',$,'Dinding Utara',$,$,#82,#79,$,$);
+#84=IFCCARTESIANPOINT((5.6,0.075));
+#85=IFCAXIS2PLACEMENT2D(#84,$);
+#86=IFCRECTANGLEPROFILEDEF(.AREA.,$,#85,11.2,0.15);
+#87=IFCEXTRUDEDAREASOLID(#86,#4,#2,3.3);
+#88=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#87));
+#89=IFCPRODUCTDEFINITIONSHAPE($,$,(#88));
+#90=IFCCARTESIANPOINT((0.4,0.15,0.0));
+#91=IFCAXIS2PLACEMENT3D(#90,$,$);
+#92=IFCLOCALPLACEMENT(#26,#91);
+#93=IFCWALL('3rk6G_T5260jcDjSqcHQky',$,'Dinding Selatan',$,$,#92,#89,$,$);
+#94=IFCCARTESIANPOINT((0.075,3.6));
+#95=IFCAXIS2PLACEMENT2D(#94,$);
+#96=IFCRECTANGLEPROFILEDEF(.AREA.,$,#95,0.15,7.2);
+#97=IFCEXTRUDEDAREASOLID(#96,#4,#2,3.3);
+#98=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#97));
+#99=IFCPRODUCTDEFINITIONSHAPE($,$,(#98));
+#100=IFCCARTESIANPOINT((0.1,0.4,0.0));
+#101=IFCAXIS2PLACEMENT3D(#100,$,$);
+#102=IFCLOCALPLACEMENT(#26,#101);
+#103=IFCWALL('1H1VJvC8IYpX17iu$VL057',$,'Dinding Barat',$,$,#102,#99,$,$);
+#104=IFCCARTESIANPOINT((0.075,3.6));
+#105=IFCAXIS2PLACEMENT2D(#104,$);
+#106=IFCRECTANGLEPROFILEDEF(.AREA.,$,#105,0.15,7.2);
+#107=IFCEXTRUDEDAREASOLID(#106,#4,#2,3.3);
+#108=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#107));
+#109=IFCPRODUCTDEFINITIONSHAPE($,$,(#108));
+#110=IFCCARTESIANPOINT((11.75,0.4,0.0));
+#111=IFCAXIS2PLACEMENT3D(#110,$,$);
+#112=IFCLOCALPLACEMENT(#26,#111);
+#113=IFCWALL('0pNUK7D1PIqPrMd8c6z0mt',$,'Dinding Timur',$,$,#112,#109,$,$);
+#114=IFCCARTESIANPOINT((0.075,3.6));
+#115=IFCAXIS2PLACEMENT2D(#114,$);
+#116=IFCRECTANGLEPROFILEDEF(.AREA.,$,#115,0.15,7.2);
+#117=IFCEXTRUDEDAREASOLID(#116,#4,#2,3.3);
+#118=IFCSHAPEREPRESENTATION(#6,'Body','SweptSolid',(#117));
+#119=IFCPRODUCTDEFINITIONSHAPE($,$,(#118));
+#120=IFCCARTESIANPOINT((5.92,0.4,0.0));
+#121=IFCAXIS2PLACEMENT3D(#120,$,$);
+#122=IFCLOCALPLACEMENT(#22,#121);
+#123=IFCWALL('3AvMSDXT4FgX6YtXbRA1LX',$,'Dinding Partisi',$,$,#122,#119,$,$);
+#124=IFCRELCONTAINEDINSPATIALSTRUCTURE('1PKfOngUmyy03tTdRo9LI4',$,$,$,(#43,#53,#63,#73,#123),#23);
+#125=IFCRELCONTAINEDINSPATIALSTRUCTURE('0EDKiI335H5858kP8nDVQQ',$,$,$,(#83,#93,#103,#113),#27);
+#126=IFCPROPERTYSINGLEVALUE('WBS',$,IFCLABEL('2.1.1'),$);
+#127=IFCPROPERTYSET('044BazCGCQbehsX2iWa6lf',$,'Jadwal',$,(#126));
+#128=IFCRELDEFINESBYPROPERTIES('3a3q3tCiy6RBaLt0Pa60i_',$,$,$,(#43,#53,#63,#73),#127);
+#129=IFCPROPERTYSINGLEVALUE('WBS',$,IFCLABEL('2.2.1'),$);
+#130=IFCPROPERTYSET('0_N$iXKaRT$LEA_DfjCpoB',$,'Jadwal',$,(#129));
+#131=IFCRELDEFINESBYPROPERTIES('33lQcXsLmTwG4ifJvfLxuW',$,$,$,(#83,#93,#103,#113),#130);
+ENDSEC;
+END-ISO-10303-21;
+</script>
+<script type="text/plain" id="sample-csv">ID;WBS;Nama Tugas;Durasi;Mulai;Selesai;% Selesai;Status
+1;1;Pekerjaan Struktur;60 hari;01/07/2026;22/09/2026;78%;On Schedule
+2;1.1;Struktur Lantai 1;14 hari;01/07/2026;18/07/2026;100%;Complete
+3;1.1.1;Pengecoran pelat lantai 1;5 hari;01/07/2026;07/07/2026;100%;Complete
+4;1.1.2;Bekisting & pembesian lantai 1;7 hari;08/07/2026;16/07/2026;100%;Complete
+5;1.2;Kolom Lantai 1;10 hari;19/07/2026;31/07/2026;100%;Complete
+6;1.2.1;Pengecoran kolom lantai 1;5 hari;19/07/2026;25/07/2026;100%;Complete
+7;1.3;Struktur Lantai 2;14 hari;01/08/2026;20/08/2026;100%;Complete
+8;1.3.1;Pengecoran pelat lantai 2;5 hari;01/08/2026;07/08/2026;100%;Complete
+9;1.4;Kolom Lantai 2;10 hari;21/08/2026;03/09/2026;60%;On Schedule
+10;1.4.1;Pengecoran kolom lantai 2;5 hari;21/08/2026;27/08/2026;60%;On Schedule
+11;1.5;Atap;10 hari;04/09/2026;17/09/2026;0%;Late
+12;1.5.1;Pengecoran pelat atap;5 hari;04/09/2026;10/09/2026;0%;Late
+13;2;Pekerjaan Arsitektur;30 hari;01/08/2026;11/09/2026;65%;On Schedule
+14;2.1;Dinding Lantai 1;14 hari;01/08/2026;20/08/2026;100%;Complete
+15;2.1.1;Pasangan bata lantai 1;10 hari;01/08/2026;14/08/2026;100%;Complete
+16;2.2;Dinding Lantai 2;14 hari;21/08/2026;09/09/2026;30%;On Schedule
+17;2.2.1;Pasangan bata lantai 2;10 hari;21/08/2026;03/09/2026;30%;On Schedule
+</script>
+
+<script>
+// BIM Progress Viewer — core logic (no DOM, no 3D).
+// Reads WBS codes out of IFC text, parses MS Project CSV exports and decides
+// which elements are finished. Kept free of browser APIs so it can be tested
+// in Node and inlined into the page unchanged.
+
+const Core = (() => {
+  // ---------- IFC STEP parsing ----------
+
+  function decodeIfcString(s) {
+    // STEP string escapes: '' -> ', \\ -> \, \X2\hhhh...\X0\, \X\hh, \S\c
+    return s
+      .replace(/''/g, "'")
+      .replace(/\\X2\\([0-9A-Fa-f]+)\\X0\\/g, (_, hex) => {
+        let out = "";
+        for (let i = 0; i + 4 <= hex.length; i += 4) out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+        return out;
+      })
+      .replace(/\\X4\\([0-9A-Fa-f]+)\\X0\\/g, (_, hex) => {
+        let out = "";
+        for (let i = 0; i + 8 <= hex.length; i += 8) out += String.fromCodePoint(parseInt(hex.slice(i, i + 8), 16));
+        return out;
+      })
+      .replace(/\\X\\([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\S\\(.)/g, (_, c) => String.fromCharCode(c.charCodeAt(0) + 128))
+      .replace(/\\\\/g, "\\");
+  }
+
+  // Parse the argument list of one entity, starting at the "(" index.
+  // Returns values: string | {ref} | {enum} | {typed, value} | array | null | "*" | {num}
+  function parseArgs(str, start = 0) {
+    let i = start;
+    function ws() { while (i < str.length && /\s/.test(str[i])) i++; }
+    function value() {
+      ws();
+      const c = str[i];
+      if (c === "(") return list();
+      if (c === "'") {
+        let j = i + 1, buf = "";
+        for (;;) {
+          const k = str.indexOf("'", j);
+          if (k < 0) { buf += str.slice(j); i = str.length; break; }
+          if (str[k + 1] === "'") { buf += str.slice(j, k + 2); j = k + 2; continue; }
+          buf += str.slice(j, k); i = k + 1; break;
+        }
+        return decodeIfcString(buf);
+      }
+      if (c === "#") {
+        const m = /^#(\d+)/.exec(str.slice(i, i + 20));
+        i += m[0].length;
+        return { ref: +m[1] };
+      }
+      if (c === "$") { i++; return null; }
+      if (c === "*") { i++; return "*"; }
+      if (c === ".") {
+        const k = str.indexOf(".", i + 1);
+        const v = str.slice(i + 1, k); i = k + 1;
+        return { enum: v };
+      }
+      if (c === '"') { // binary
+        const k = str.indexOf('"', i + 1);
+        const v = str.slice(i + 1, k); i = k + 1;
+        return { binary: v };
+      }
+      if (/[-+0-9]/.test(c)) {
+        const m = /^[-+]?[0-9]*\.?[0-9]*(?:[eE][-+]?[0-9]+)?/.exec(str.slice(i, i + 40));
+        i += m[0].length;
+        return { num: m[0] };
+      }
+      if (/[A-Za-z]/.test(c)) { // typed value e.g. IFCLABEL('x')
+        const m = /^[A-Za-z0-9_]+/.exec(str.slice(i, i + 80));
+        i += m[0].length; ws();
+        const inner = list();
+        return { typed: m[0].toUpperCase(), value: inner[0] };
+      }
+      throw new Error("Unexpected char '" + c + "' at " + i);
+    }
+    function list() {
+      const out = [];
+      i++; // (
+      ws();
+      if (str[i] === ")") { i++; return out; }
+      for (;;) {
+        out.push(value());
+        ws();
+        if (str[i] === ",") { i++; continue; }
+        if (str[i] === ")") { i++; return out; }
+        throw new Error("Expected , or ) at " + i);
+      }
+    }
+    return list();
+  }
+
+  function valueToText(v) {
+    if (v == null) return "";
+    if (typeof v === "string") return v;
+    if (v.typed) return valueToText(v.value);
+    if (v.num !== undefined) return v.num;
+    if (v.enum !== undefined) return v.enum;
+    if (v.ref !== undefined) return "#" + v.ref;
+    return String(v);
+  }
+
+  const refs = (list) => (Array.isArray(list) ? list.filter((x) => x && x.ref !== undefined).map((x) => x.ref) : []);
+
+  const WANTED = new Set([
+    "IFCPROPERTYSINGLEVALUE",
+    "IFCPROPERTYSET",
+    "IFCRELDEFINESBYPROPERTIES",
+    "IFCRELDEFINESBYTYPE",
+    "IFCRELAGGREGATES",
+  ]);
+  const isTypeEntity = (t) => /TYPE$|^IFCDOORSTYLE$|^IFCWINDOWSTYLE$/.test(t) && !t.startsWith("IFCRELDEFINES");
+
+  // Scan an IFC file once. Returns where every entity starts (for later lookups)
+  // and the WBS value of every element that has the named property.
+  function indexIfc(text, propName = "WBS") {
+    const target = propName.trim().toLowerCase();
+    const offsets = new Map();
+    const matchingProps = new Map(); // propId -> value
+    const psetProps = new Map();     // psetId -> [propId]
+    const relProps = [];             // [objectIds, psetId]
+    const relTypes = [];             // [objectIds, typeId]
+    const relAgg = [];               // [parentId, childIds]
+    const typePsets = new Map();     // typeId -> [psetId]
+    const wbsLikeNames = new Map();  // property names containing "wbs" -> count
+    let i = text.indexOf("DATA;");
+    i = i < 0 ? 0 : i + 5;
+    const n = text.length;
+    while (i < n) {
+      const s = text.indexOf("#", i);
+      if (s < 0) break;
+      // statement end = first ';' outside a quoted string
+      let j = s, inStr = false;
+      for (; j < n; j++) {
+        const c = text.charCodeAt(j);
+        if (c === 39) inStr = !inStr;
+        else if (c === 59 && !inStr) break;
+      }
+      i = j + 1;
+      const eq = text.indexOf("=", s);
+      if (eq < 0 || eq > j) continue;
+      const id = +text.slice(s + 1, eq);
+      if (!Number.isFinite(id)) continue;
+      offsets.set(id, s);
+      const lp = text.indexOf("(", eq);
+      if (lp < 0 || lp > j) continue;
+      const type = text.slice(eq + 1, lp).trim().toUpperCase();
+      const wanted = WANTED.has(type);
+      const typeObj = !wanted && isTypeEntity(type);
+      if (!wanted && !typeObj) continue;
+      let args;
+      try { args = parseArgs(text.slice(lp, j)); } catch { continue; }
+      if (type === "IFCPROPERTYSINGLEVALUE") {
+        const name = String(args[0] ?? "").trim();
+        const low = name.toLowerCase();
+        if (low.includes("wbs")) wbsLikeNames.set(name, (wbsLikeNames.get(name) || 0) + 1);
+        if (low === target) matchingProps.set(id, valueToText(args[2]).trim());
+      } else if (type === "IFCPROPERTYSET") {
+        psetProps.set(id, refs(args[4]));
+      } else if (type === "IFCRELDEFINESBYPROPERTIES") {
+        const def = args[5];
+        if (def && def.ref !== undefined) relProps.push([refs(args[4]), def.ref]);
+      } else if (type === "IFCRELAGGREGATES") {
+        const p = args[4];
+        if (p && p.ref !== undefined) relAgg.push([p.ref, refs(args[5])]);
+      } else if (type === "IFCRELDEFINESBYTYPE") {
+        const t = args[5];
+        if (t && t.ref !== undefined) relTypes.push([refs(args[4]), t.ref]);
+      } else if (typeObj) {
+        const ps = refs(args[5]);
+        if (ps.length) typePsets.set(id, ps);
+      }
+    }
+
+    const psetValue = (psetId) => {
+      for (const p of psetProps.get(psetId) || []) {
+        const v = matchingProps.get(p);
+        if (v) return v;
+      }
+      return null;
+    };
+    const wbsByElement = new Map();
+    // Type-level values first, instance values override them.
+    for (const [objs, typeId] of relTypes) {
+      for (const ps of typePsets.get(typeId) || []) {
+        const v = psetValue(ps);
+        if (v) for (const o of objs) wbsByElement.set(o, v);
+      }
+    }
+    for (const [objs, ps] of relProps) {
+      const v = psetValue(ps);
+      if (v) for (const o of objs) wbsByElement.set(o, v);
+    }
+    // Parts of an assembly (stair flights, curtain wall panels, Revit
+    // assemblies) inherit the WBS of their parent when they have none.
+    for (let pass = 0, changed = true; changed && pass < 6; pass++) {
+      changed = false;
+      for (const [parent, children] of relAgg) {
+        const v = wbsByElement.get(parent);
+        if (!v) continue;
+        for (const c of children) if (!wbsByElement.has(c)) { wbsByElement.set(c, v); changed = true; }
+      }
+    }
+    return { offsets, wbsByElement, wbsLikeNames };
+  }
+
+  // Read class, GlobalId and Name of one entity on demand (for the info panel).
+  function entityInfo(text, offsets, id) {
+    const s = offsets.get(id);
+    if (s === undefined) return null;
+    const eq = text.indexOf("=", s);
+    const lp = text.indexOf("(", eq);
+    let j = lp, inStr = false;
+    for (; j < text.length; j++) {
+      const c = text.charCodeAt(j);
+      if (c === 39) inStr = !inStr;
+      else if (c === 59 && !inStr) break;
+    }
+    const type = text.slice(eq + 1, lp).trim().toUpperCase();
+    let args = [];
+    try { args = parseArgs(text.slice(lp, j)); } catch {}
+    return {
+      type,
+      globalId: typeof args[0] === "string" ? args[0] : "",
+      name: typeof args[2] === "string" ? args[2] : "",
+    };
+  }
+
+  // ---------- CSV (MS Project export) ----------
+
+  function decodeBytes(bytes) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes).replace(/^﻿/, "");
+    } catch {
+      return new TextDecoder("windows-1252").decode(bytes);
+    }
+  }
+
+  function detectDelimiter(text) {
+    const firstLine = text.split(/\r?\n/, 1)[0] || "";
+    let best = ",", bestCount = -1;
+    for (const d of [";", ",", "\t", "|"]) {
+      let count = 0, inQ = false;
+      for (const ch of firstLine) {
+        if (ch === '"') inQ = !inQ;
+        else if (ch === d && !inQ) count++;
+      }
+      if (count > bestCount) { best = d; bestCount = count; }
+    }
+    return best;
+  }
+
+  function parseCsv(text, delimiter = detectDelimiter(text)) {
+    const rows = [];
+    let row = [], field = "", inQ = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQ) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false;
+        } else field += c;
+      } else if (c === '"') inQ = true;
+      else if (c === delimiter) { row.push(field); field = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(field); field = "";
+        if (row.some((v) => v.trim() !== "")) rows.push(row);
+        row = [];
+      } else field += c;
+    }
+    row.push(field);
+    if (row.some((v) => v.trim() !== "")) rows.push(row);
+    const headers = (rows.shift() || []).map((h) => h.trim());
+    return { headers, rows, delimiter };
+  }
+
+  function guessColumns(headers) {
+    const find = (...res) => {
+      for (const re of res) {
+        const k = headers.findIndex((h) => re.test(h));
+        if (k >= 0) return k;
+      }
+      return -1;
+    };
+    return {
+      wbs: find(/^wbs$/i, /wbs/i, /kode/i),
+      status: find(/^status$/i, /^%\s*(complete|selesai|lengkap)/i, /%/, /status/i, /progress|progres/i),
+      name: find(/^(task\s*)?name$/i, /^nama/i, /name|nama|tugas|uraian/i),
+    };
+  }
+
+  // ---------- matching ----------
+
+  const normWbs = (w) => String(w ?? "").replace(/^["']|["']$/g, "").trim().replace(/\s+/g, "").toLowerCase();
+  const normVal = (v) => String(v ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const DEFAULT_FINISH = "Complete, Completed, Selesai, Finish, Finished, Done, 100%";
+
+  function makeFinishTest(finishValuesText) {
+    const set = new Set(finishValuesText.split(/[,;\n]/).map(normVal).filter(Boolean));
+    const numeric = set.has("100%") || set.has("100");
+    return (v) => {
+      const s = normVal(v);
+      if (!s) return false;
+      if (set.has(s)) return true;
+      if (numeric) {
+        const num = parseFloat(s.replace("%", "").replace(",", "."));
+        if (/^[0-9.,]+\s*%?$/.test(s) && num >= 100) return true;
+      }
+      return false;
+    };
+  }
+
+  function ancestors(code) {
+    const parts = code.split(".");
+    const out = [];
+    for (let k = parts.length - 1; k >= 1; k--) out.push(parts.slice(0, k).join("."));
+    return out;
+  }
+
+  // Build the schedule model from a parsed CSV.
+  function buildSchedule(csv, cols, finishValuesText) {
+    const isFinish = makeFinishTest(finishValuesText);
+    const rowsByWbs = new Map();
+    const finish = new Set();
+    for (const r of csv.rows) {
+      const w = normWbs(r[cols.wbs]);
+      if (!w) continue;
+      rowsByWbs.set(w, r);
+      if (isFinish(r[cols.status])) finish.add(w);
+    }
+    // Summary tasks = codes that have children in the CSV.
+    const summary = new Set();
+    for (const w of rowsByWbs.keys()) for (const a of ancestors(w)) if (rowsByWbs.has(a)) summary.add(a);
+    return { rowsByWbs, finish, summary };
+  }
+
+  const splitCodes = (raw) => String(raw).split(/[;,]/).map(normWbs).filter(Boolean);
+
+  // Status of one element: "finish" | "pending" | "unscheduled" (WBS not in CSV) | "nowbs"
+  function elementStatus(rawWbs, schedule, inheritParent) {
+    if (!rawWbs) return "nowbs";
+    const codes = splitCodes(rawWbs);
+    if (!codes.length) return "nowbs";
+    let allFinish = true, anyKnown = false;
+    for (const c of codes) {
+      const known = schedule.rowsByWbs.has(c) || (inheritParent && ancestors(c).some((a) => schedule.rowsByWbs.has(a)));
+      if (known) anyKnown = true;
+      const done = schedule.finish.has(c) || (inheritParent && ancestors(c).some((a) => schedule.finish.has(a)));
+      if (!done) allFinish = false;
+    }
+    if (allFinish) return "finish";
+    return anyKnown ? "pending" : "unscheduled";
+  }
+
+  // Matching report across all loaded models.
+  function matchReport(allElementWbs, schedule, inheritParent) {
+    const used = new Set();
+    for (const raw of allElementWbs) {
+      for (const c of splitCodes(raw)) {
+        used.add(c);
+        if (inheritParent) for (const a of ancestors(c)) used.add(a);
+      }
+    }
+    const finishNotInModel = [];
+    for (const w of schedule.finish) {
+      if (schedule.summary.has(w)) continue;
+      if (!used.has(w)) finishNotInModel.push(w);
+    }
+    const modelNotInCsv = new Map();
+    for (const raw of allElementWbs) {
+      for (const c of splitCodes(raw)) {
+        const known = schedule.rowsByWbs.has(c) || (inheritParent && ancestors(c).some((a) => schedule.rowsByWbs.has(a)));
+        if (!known) modelNotInCsv.set(c, (modelNotInCsv.get(c) || 0) + 1);
+      }
+    }
+    return { finishNotInModel, modelNotInCsv };
+  }
+
+  return {
+    parseArgs, decodeIfcString, indexIfc, entityInfo,
+    decodeBytes, detectDelimiter, parseCsv, guessColumns,
+    normWbs, makeFinishTest, buildSchedule, elementStatus, matchReport, ancestors,
+    DEFAULT_FINISH,
+  };
+})();
+
+
+
+</script>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const WEBIFC_VERSION = "0.0.66";
+const WEBIFC_URL = `https://cdn.jsdelivr.net/npm/web-ifc@${WEBIFC_VERSION}/`;
+
+const $ = (id) => document.getElementById(id);
+const STATUS_LABEL = {
+  finish: "Finish",
+  pending: "Belum finish",
+  unscheduled: "WBS tidak ada di CSV",
+  nowbs: "Tanpa WBS",
+  neutral: "Belum ada jadwal",
+};
+
+const state = {
+  models: [],          // {uid, name, text, index, group, elements: Map<eid,{meshes,wbs,status}>, visible}
+  csv: null,           // {fileName, headers, rows, delimiter}
+  cols: { wbs: -1, status: -1, name: -1 },
+  schedule: null,
+  mode: "finish",
+  inherit: false,
+  propName: "WBS",
+  finishText: Core.DEFAULT_FINISH,
+  offset: null,
+  selected: null,      // {model, eid}
+};
+let uidSeq = 0;
+
+// ---------- 3D scene ----------
+const viewport = $("viewport");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+viewport.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+camera.position.set(20, 15, 20);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = false;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a96a3, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(0.6, 1, 0.4);
+scene.add(sun);
+let grid = null;
+
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const MAT = {
+  finish: new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }),
+  pending: new THREE.MeshLambertMaterial({ transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }),
+  unscheduled: new THREE.MeshLambertMaterial({ transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }),
+  nowbs: new THREE.MeshLambertMaterial({ transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide }),
+  neutral: new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }),
+  selected: new THREE.MeshLambertMaterial({ side: THREE.DoubleSide }),
+};
+function applyTheme() {
+  scene.background = new THREE.Color(cssVar("--viewport"));
+  MAT.finish.color.set(cssVar("--finish"));
+  MAT.pending.color.set(cssVar("--pending"));
+  MAT.unscheduled.color.set(cssVar("--unscheduled"));
+  MAT.nowbs.color.set(cssVar("--nowbs"));
+  MAT.neutral.color.set(cssVar("--pending"));
+  MAT.selected.color.set(cssVar("--accent"));
+  if (grid) { grid.material.color.set(cssVar("--grid")); }
+  requestRender();
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+let renderQueued = false;
+function requestRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; renderer.render(scene, camera); });
+}
+controls.addEventListener("change", requestRender);
+new ResizeObserver(() => {
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  requestRender();
+}).observe(viewport);
+
+function fitView() {
+  scene.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const visibleOnly = new THREE.Box3();
+  for (const m of state.models) {
+    m.group.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.computeBoundingBox();
+      const b = o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld);
+      box.union(b);
+      if (o.visible && m.group.visible) visibleOnly.union(b);
+    });
+  }
+  const target = visibleOnly.isEmpty() ? box : visibleOnly;
+  if (target.isEmpty()) return;
+  const size = target.getSize(new THREE.Vector3());
+  const center = target.getCenter(new THREE.Vector3());
+  const radius = Math.max(size.length() / 2, 1);
+  const dist = radius / Math.sin((camera.fov * Math.PI) / 360) * 1.05;
+  const dir = new THREE.Vector3(1, 0.75, 1.1).normalize();
+  camera.position.copy(center).addScaledVector(dir, dist);
+  camera.near = Math.max(dist / 1000, 0.01);
+  camera.far = dist * 20;
+  camera.updateProjectionMatrix();
+  controls.target.copy(center);
+  controls.update();
+  // ground grid under the whole federated model
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); }
+  const all = box.getSize(new THREE.Vector3());
+  const gsize = Math.ceil(Math.max(all.x, all.z, 10) * 1.6);
+  grid = new THREE.GridHelper(gsize, Math.min(gsize, 80));
+  grid.material.transparent = true; grid.material.opacity = 0.6;
+  grid.material.color.set(cssVar("--grid"));
+  grid.position.set(box.getCenter(new THREE.Vector3()).x, box.min.y - 0.01, box.getCenter(new THREE.Vector3()).z);
+  scene.add(grid);
+  requestRender();
+}
+
+// ---------- web-ifc ----------
+let ifcApiPromise = null;
+function getIfcApi() {
+  if (!ifcApiPromise) {
+    ifcApiPromise = (async () => {
+      const WebIFC = await import(WEBIFC_URL + "web-ifc-api.js");
+      const api = new WebIFC.IfcAPI();
+      api.SetWasmPath(WEBIFC_URL, true);
+      await api.Init(undefined, true);
+      return api;
+    })().catch((e) => { ifcApiPromise = null; throw e; });
+  }
+  return ifcApiPromise;
+}
+
+const vecSize = (v) => (typeof v.size === "function" ? v.size() : v.length);
+const vecGet = (v, k) => (typeof v.get === "function" ? v.get(k) : v[k]);
+
+async function loadIfcFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const text = new TextDecoder("utf-8").decode(bytes);
+  const index = Core.indexIfc(text, state.propName);
+  const api = await getIfcApi();
+  const modelID = api.OpenModel(bytes, { COORDINATE_TO_ORIGIN: false });
+  const model = { uid: ++uidSeq, name: file.name, text, index, group: new THREE.Group(), elements: new Map(), visible: true };
+  model.group.name = file.name;
+  try {
+    api.StreamAllMeshes(modelID, (flat) => {
+      const eid = flat.expressID;
+      let entry = model.elements.get(eid);
+      if (!entry) {
+        entry = { meshes: [], wbs: index.wbsByElement.get(eid) || null, status: "neutral" };
+        model.elements.set(eid, entry);
+      }
+      const geoms = flat.geometries;
+      for (let k = 0; k < vecSize(geoms); k++) {
+        const pg = vecGet(geoms, k);
+        const g = api.GetGeometry(modelID, pg.geometryExpressID);
+        const verts = api.GetVertexArray(g.GetVertexData(), g.GetVertexDataSize());
+        const idx = api.GetIndexArray(g.GetIndexData(), g.GetIndexDataSize());
+        const geo = new THREE.BufferGeometry();
+        const ib = new THREE.InterleavedBuffer(new Float32Array(verts), 6);
+        geo.setAttribute("position", new THREE.InterleavedBufferAttribute(ib, 3, 0));
+        geo.setAttribute("normal", new THREE.InterleavedBufferAttribute(ib, 3, 3));
+        geo.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1));
+        if (g.delete) g.delete();
+        const mtx = new THREE.Matrix4().fromArray(pg.flatTransformation);
+        // Shift everything by one shared offset so models far from the origin
+        // stay precise and stay aligned with each other.
+        if (!state.offset) state.offset = new THREE.Vector3(mtx.elements[12], mtx.elements[13], mtx.elements[14]);
+        mtx.elements[12] -= state.offset.x;
+        mtx.elements[13] -= state.offset.y;
+        mtx.elements[14] -= state.offset.z;
+        const mesh = new THREE.Mesh(geo, MAT.neutral);
+        mesh.matrixAutoUpdate = false;
+        mesh.matrix.copy(mtx);
+        mesh.userData = { eid, uid: model.uid };
+        model.group.add(mesh);
+        entry.meshes.push(mesh);
+      }
+    });
+  } finally {
+    api.CloseModel(modelID);
+  }
+  return model;
+}
+
+function disposeModel(m) {
+  m.group.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
+  scene.remove(m.group);
+}
+
+// ---------- loading flow ----------
+function showOverlay(html) {
+  $("overlay-card").innerHTML = html;
+  $("overlay").hidden = false;
+}
+function hideOverlay() { $("overlay").hidden = true; }
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const emptyOverlayHtml = $("overlay-card").innerHTML;
+
+async function handleFiles(fileList) {
+  const files = [...fileList];
+  const ifcs = files.filter((f) => /\.ifc$/i.test(f.name));
+  const csvs = files.filter((f) => /\.csv$/i.test(f.name)).sort((a, b) => b.lastModified - a.lastModified);
+  if (!ifcs.length && !csvs.length) {
+    showOverlay(`<h3>Tidak ada file yang bisa dibaca</h3><p>Pilih file berakhiran <span class="mono">.ifc</span> atau <span class="mono">.csv</span>.</p><div class="row"><button class="btn" type="button" data-act="dismiss">Tutup</button></div>`);
+    return;
+  }
+  if (csvs.length) await loadCsvFile(csvs[0]);
+  for (let n = 0; n < ifcs.length; n++) {
+    const f = ifcs[n];
+    showOverlay(`<div class="loading-row"><div class="spinner"></div><h3>Memuat model ${n + 1} dari ${ifcs.length}</h3></div><p class="mono">${esc(f.name)}</p><p class="hint">${(f.size / 1048576).toFixed(1)} MB. File besar bisa butuh beberapa menit.</p>`);
+    await new Promise((r) => setTimeout(r, 30)); // let the overlay paint
+    try {
+      const existing = state.models.findIndex((m) => m.name === f.name);
+      if (existing >= 0) { disposeModel(state.models[existing]); state.models.splice(existing, 1); }
+      const model = await loadIfcFile(f);
+      state.models.push(model);
+      scene.add(model.group);
+    } catch (e) {
+      console.error(e);
+      const offline = /fetch|import|network|Failed/i.test(String(e && e.message));
+      showOverlay(`<h3>Gagal memuat ${esc(f.name)}</h3><p class="err">${esc(e && e.message ? e.message : e)}</p>${offline ? '<p>Mesin pembaca IFC diunduh dari internet saat pertama dipakai. Pastikan komputer terhubung ke internet lalu coba lagi.</p>' : ""}<div class="row"><button class="btn" type="button" data-act="dismiss">Tutup</button></div>`);
+      refresh(true);
+      return;
+    }
+  }
+  hideOverlay();
+  refresh(true);
+}
+
+async function loadCsvFile(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const text = Core.decodeBytes(bytes);
+  const csv = Core.parseCsv(text);
+  csv.fileName = file.name;
+  state.csv = csv;
+  state.cols = Core.guessColumns(csv.headers);
+  fillColumnSelects();
+  $("csv-name").hidden = false;
+  $("csv-name").textContent = `${file.name} · ${csv.rows.length} baris · pemisah "${csv.delimiter === "\t" ? "tab" : csv.delimiter}"`;
+  rebuildSchedule();
+  refresh(false);
+}
+
+function fillColumnSelects() {
+  for (const [key, sel] of [["wbs", $("col-wbs")], ["status", $("col-status")]]) {
+    sel.innerHTML = `<option value="-1">— pilih kolom —</option>` + state.csv.headers.map((h, k) => `<option value="${k}">${esc(h || "(kolom " + (k + 1) + ")")}</option>`).join("");
+    sel.value = String(state.cols[key]);
+    sel.disabled = false;
+  }
+}
+
+function rebuildSchedule() {
+  if (!state.csv || state.cols.wbs < 0 || state.cols.status < 0) { state.schedule = null; return; }
+  state.schedule = Core.buildSchedule(state.csv, state.cols, state.finishText);
+}
+
+// ---------- status, visibility, panels ----------
+function refresh(fit) {
+  const counts = { finish: 0, pending: 0, unscheduled: 0, nowbs: 0, neutral: 0 };
+  const hasSchedule = !!state.schedule;
+  for (const m of state.models) {
+    m.counts = { finish: 0, total: 0 };
+    m.group.visible = m.visible;
+    for (const [eid, e] of m.elements) {
+      const st = hasSchedule ? Core.elementStatus(e.wbs, state.schedule, state.inherit) : (e.wbs ? "neutral" : "nowbs");
+      e.status = st;
+      if (m.visible) counts[st]++;
+      m.counts.total++;
+      if (st === "finish") m.counts.finish++;
+      const isSel = state.selected && state.selected.uid === m.uid && state.selected.eid === eid;
+      const show = !hasSchedule || state.mode === "all" || st === "finish";
+      for (const mesh of e.meshes) {
+        mesh.material = isSel ? MAT.selected : MAT[st];
+        mesh.visible = show || isSel;
+        mesh.renderOrder = st === "finish" || st === "neutral" ? 0 : 1;
+      }
+    }
+  }
+  $("mode-finish").disabled = $("mode-all").disabled = !hasSchedule;
+  renderModels();
+  renderSummary(counts, hasSchedule);
+  renderReport();
+  renderInfo();
+  $("btn-fit").hidden = $("viewhelp").hidden = state.models.length === 0;
+  if (state.models.length === 0 && $("overlay").hidden) showOverlay(emptyOverlayHtml);
+  if (fit) fitView();
+  requestRender();
+}
+
+function renderModels() {
+  $("models").innerHTML = state.models.map((m) => `
+    <li>
+      <input type="checkbox" id="vis-${m.uid}" data-uid="${m.uid}" ${m.visible ? "checked" : ""} aria-label="Tampilkan ${esc(m.name)}">
+      <label for="vis-${m.uid}"><div class="mname">${esc(m.name)}</div>
+        <div class="mstat num">${m.elements.size} elemen · ${state.schedule ? m.counts.finish + " finish" : [...m.elements.values()].filter((e) => e.wbs).length + " ber-WBS"}</div></label>
+      <button type="button" data-remove="${m.uid}" title="Tutup model" aria-label="Tutup ${esc(m.name)}">×</button>
+    </li>`).join("");
+}
+
+function renderSummary(c, hasSchedule) {
+  const total = c.finish + c.pending + c.unscheduled + c.nowbs + c.neutral;
+  const pct = total ? (c.finish / total) * 100 : 0;
+  if (!state.models.length) {
+    $("pct").innerHTML = "–<small></small>";
+    $("headline").textContent = "Belum ada model dimuat";
+  } else if (!hasSchedule) {
+    $("pct").innerHTML = `–<small>muat CSV jadwal</small>`;
+    $("headline").textContent = `${total} elemen dimuat · menunggu CSV jadwal`;
+  } else {
+    $("pct").innerHTML = `${pct.toFixed(pct < 10 && pct > 0 ? 1 : 0)}%<small>${c.finish} dari ${total} elemen finish</small>`;
+    $("headline").innerHTML = `<b>${c.finish}</b> dari ${total} elemen finish`;
+  }
+  const seg = (k, v) => (v ? `<i style="width:${(v / total) * 100}%;background:var(--${k === "neutral" ? "pending" : k})"></i>` : "");
+  $("bar").innerHTML = total ? seg("finish", c.finish) + seg("pending", c.pending) + seg("unscheduled", c.unscheduled) + seg("neutral", c.neutral) : "";
+  const keys = hasSchedule ? ["finish", "pending", "unscheduled", "nowbs"] : ["neutral", "nowbs"];
+  $("legend").innerHTML = keys.map((k) => `<li><span class="sw ${k === "neutral" ? "pending" : k}"></span><span>${STATUS_LABEL[k]}</span><span>${c[k]}</span></li>`).join("");
+}
+
+function renderReport() {
+  const el = $("report");
+  if (!state.models.length && !state.csv) { el.innerHTML = `<p class="hint">Muat model dan CSV untuk melihat WBS yang tidak cocok.</p>`; return; }
+  const parts = [];
+  let noWbs = 0, withGeom = 0;
+  const allWbs = [];
+  for (const m of state.models) for (const e of m.elements.values()) { withGeom++; if (e.wbs) allWbs.push(e.wbs); else noWbs++; }
+  const list = (items) => items.length ? `<div class="codes">${items.map((x) => `<span class="code">${esc(x)}</span>`).join("")}</div>` : "";
+  if (state.models.length && allWbs.length === 0) {
+    const names = new Map();
+    for (const m of state.models) for (const [n, c] of m.index.wbsLikeNames) names.set(n, (names.get(n) || 0) + c);
+    parts.push(`<p class="hint warn">Tidak ada elemen dengan properti "${esc(state.propName)}". ${names.size ? "Properti mirip yang ditemukan: " + [...names.keys()].map((n) => `<button class="btn link" type="button" data-prop="${esc(n)}">${esc(n)}</button>`).join(", ") : "Pastikan parameter WBS ikut ter-export ke IFC."}</p>`);
+  }
+  if (state.schedule) {
+    const rep = Core.matchReport(allWbs, state.schedule, state.inherit);
+    parts.push(`<details ${rep.finishNotInModel.length ? "" : ""}><summary><span>WBS finish di CSV, tidak ada di model</span><span class="cnt">${rep.finishNotInModel.length}</span></summary>${list(rep.finishNotInModel.sort(cmpWbs))}</details>`);
+    const nic = [...rep.modelNotInCsv.entries()].sort((a, b) => cmpWbs(a[0], b[0]));
+    parts.push(`<details><summary><span>WBS di model, tidak ada di CSV</span><span class="cnt">${nic.length}</span></summary>${list(nic.map(([w, n]) => `${w} ×${n}`))}</details>`);
+  } else if (state.csv) {
+    parts.push(`<p class="hint warn">Pilih kolom WBS dan kolom status di CSV.</p>`);
+  }
+  if (state.models.length) parts.push(`<p class="hint num">${noWbs} dari ${withGeom} elemen tidak punya properti WBS.</p>`);
+  el.innerHTML = parts.join("");
+}
+function cmpWbs(a, b) {
+  const pa = a.split("."), pb = b.split(".");
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? "", y = pb[i] ?? "";
+    const nx = parseFloat(x), ny = parseFloat(y);
+    if (!isNaN(nx) && !isNaN(ny) && nx !== ny) return nx - ny;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+function renderInfo() {
+  const box = $("info");
+  const sel = state.selected;
+  const m = sel && state.models.find((x) => x.uid === sel.uid);
+  const e = m && m.elements.get(sel.eid);
+  if (!e) { box.hidden = true; return; }
+  const info = Core.entityInfo(m.text, m.index.offsets, sel.eid) || { type: "", name: "", globalId: "" };
+  let rowHtml = "";
+  if (state.schedule && e.wbs) {
+    const codes = String(e.wbs).split(/[;,]/).map(Core.normWbs).filter(Boolean);
+    for (const c of codes) {
+      let row = state.schedule.rowsByWbs.get(c);
+      let via = c;
+      if (!row && state.inherit) for (const a of Core.ancestors(c)) if (state.schedule.rowsByWbs.get(a)) { row = state.schedule.rowsByWbs.get(a); via = a; break; }
+      if (!row) continue;
+      rowHtml += `<dl>${state.csv.headers.map((h, k) => row[k] ? `<dt>${esc(h)}</dt><dd>${esc(row[k])}</dd>` : "").join("")}</dl>`;
+      if (via !== c) rowHtml = `<p class="hint">Status diambil dari WBS induk <span class="mono">${esc(via)}</span>.</p>` + rowHtml;
+    }
+    if (!rowHtml) rowHtml = `<p class="hint">WBS ini tidak ditemukan di CSV.</p>`;
+  }
+  box.innerHTML = `
+    <header><div><div class="cls">${esc(info.type)}</div><h4>${esc(info.name || "(tanpa nama)")}</h4></div>
+    <button class="close" type="button" data-act="unselect" aria-label="Tutup detail">×</button></header>
+    <div><span class="pill ${e.status === "neutral" ? "pending" : e.status}">${STATUS_LABEL[e.status]}</span></div>
+    <dl>
+      <dt>WBS</dt><dd class="mono">${esc(e.wbs || "—")}</dd>
+      <dt>File</dt><dd class="mono">${esc(m.name)}</dd>
+      <dt>GlobalId</dt><dd class="mono">${esc(info.globalId)}</dd>
+    </dl>
+    ${rowHtml ? `<div class="hint" style="margin-top:4px">Data jadwal (MS Project)</div>${rowHtml}` : ""}`;
+  box.hidden = false;
+}
+
+// ---------- picking ----------
+const raycaster = new THREE.Raycaster();
+let downAt = null;
+renderer.domElement.addEventListener("pointerdown", (ev) => { downAt = [ev.clientX, ev.clientY]; });
+renderer.domElement.addEventListener("pointerup", (ev) => {
+  if (!downAt || Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]) > 4 || ev.button !== 0) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  const p = new THREE.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(p, camera);
+  const candidates = [];
+  for (const m of state.models) if (m.group.visible) m.group.traverse((o) => { if (o.isMesh && o.visible) candidates.push(o); });
+  // Prefer solid (finish/neutral) hits over ghosted ones.
+  const hits = raycaster.intersectObjects(candidates, false);
+  const solid = hits.find((h) => !h.object.material.transparent);
+  const hit = solid || hits[0];
+  state.selected = hit ? { uid: hit.object.userData.uid, eid: hit.object.userData.eid } : null;
+  refresh(false);
+});
+
+// ---------- controls ----------
+function setMode(mode) {
+  state.mode = mode;
+  $("mode-finish").setAttribute("aria-pressed", String(mode === "finish"));
+  $("mode-all").setAttribute("aria-pressed", String(mode === "all"));
+  refresh(false);
+}
+$("mode-finish").onclick = () => setMode("finish");
+$("mode-all").onclick = () => setMode("all");
+$("btn-folder").onclick = () => $("in-folder").click();
+$("btn-ifc").onclick = () => $("in-ifc").click();
+$("btn-csv").onclick = () => $("in-csv").click();
+$("btn-fit").onclick = fitView;
+for (const id of ["in-folder", "in-ifc", "in-csv"]) {
+  $(id).addEventListener("change", async (ev) => {
+    const files = ev.target.files;
+    if (files && files.length) await handleFiles(files);
+    ev.target.value = "";
+  });
+}
+$("col-wbs").onchange = (ev) => { state.cols.wbs = +ev.target.value; rebuildSchedule(); refresh(false); };
+$("col-status").onchange = (ev) => { state.cols.status = +ev.target.value; rebuildSchedule(); refresh(false); };
+$("finish-values").value = state.finishText;
+$("finish-values").addEventListener("change", (ev) => { state.finishText = ev.target.value; rebuildSchedule(); refresh(false); });
+$("inherit").onchange = (ev) => { state.inherit = ev.target.checked; refresh(false); };
+function applyPropName(name) {
+  state.propName = name.trim() || "WBS";
+  $("prop-name").value = state.propName;
+  for (const m of state.models) {
+    m.index = Core.indexIfc(m.text, state.propName);
+    for (const [eid, e] of m.elements) e.wbs = m.index.wbsByElement.get(eid) || null;
+  }
+  refresh(false);
+}
+$("btn-prop").onclick = () => applyPropName($("prop-name").value);
+$("prop-name").addEventListener("keydown", (ev) => { if (ev.key === "Enter") applyPropName(ev.target.value); });
+
+document.addEventListener("click", (ev) => {
+  const t = ev.target.closest("[data-remove],[data-act],[data-prop],[data-uid]");
+  if (!t) return;
+  if (t.dataset.remove) {
+    const k = state.models.findIndex((m) => m.uid === +t.dataset.remove);
+    if (k >= 0) { disposeModel(state.models[k]); state.models.splice(k, 1); }
+    if (!state.models.length) state.offset = null;
+    if (state.selected && state.selected.uid === +t.dataset.remove) state.selected = null;
+    refresh(true);
+  } else if (t.dataset.act === "dismiss") {
+    hideOverlay(); refresh(false);
+  } else if (t.dataset.act === "unselect") {
+    state.selected = null; refresh(false);
+  } else if (t.dataset.act === "sample") {
+    loadSample();
+  } else if (t.dataset.prop) {
+    applyPropName(t.dataset.prop);
+  } else if (t.dataset.uid && t.type === "checkbox") {
+    const m = state.models.find((x) => x.uid === +t.dataset.uid);
+    if (m) { m.visible = t.checked; refresh(false); }
+  }
+});
+
+async function loadSample() {
+  const mk = (id, name, type) => new File([$(id).textContent.trim() + "\n"], name, { type });
+  await handleFiles([
+    mk("sample-str", "STR_Gedung-Contoh.ifc", "application/octet-stream"),
+    mk("sample-ars", "ARS_Gedung-Contoh.ifc", "application/octet-stream"),
+    mk("sample-csv", "Jadwal_MSProject.csv", "text/csv"),
+  ]);
+}
+$("btn-sample").setAttribute("data-act", "sample");
+
+// drag & drop
+let dragDepth = 0;
+addEventListener("dragenter", (ev) => { ev.preventDefault(); dragDepth++; document.body.classList.add("dropping"); });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dropping"); } });
+addEventListener("dragover", (ev) => ev.preventDefault());
+addEventListener("drop", (ev) => {
+  ev.preventDefault(); dragDepth = 0; document.body.classList.remove("dropping");
+  if (ev.dataTransfer && ev.dataTransfer.files.length) handleFiles(ev.dataTransfer.files);
+});
+
+applyTheme();
+refresh(false);
+// Warm up the IFC engine in the background so the first model opens faster.
+getIfcApi().catch(() => {});
+window.__bpv = { state, loadSample, THREE, scene, camera };
+</script>
+
+</body>
+</html>
