@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="id">
 <head>
-<script src="login-gate.js" data-app="GilBIMCollab"></script>
-<title>GilBIMCollab</title>
+<script src="login-gate.js" data-app="Kolab"></script>
+<title>Kolab</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -542,7 +542,7 @@ if (window.opener && window.name === "bpv-login" && /[?&](code|error)=/.test(loc
 }
 </script>
 <header class="topbar">
-  <div class="brand"><h1>GilBIMCollab</h1><span id="brand-sub">v0.5</span></div>
+  <div class="brand"><h1>Kolab</h1><span id="brand-sub">v0.5</span></div>
   <div class="seg" role="group" aria-label="Mode tampilan">
     <button id="mode-finish" type="button" aria-pressed="true">Hanya finish</button>
     <button id="mode-all" type="button" aria-pressed="false">Semua status</button>
@@ -3471,7 +3471,7 @@ END-ISO-10303-21;
 
 
 <script>
-// GilBIMCollab — core logic (no DOM, no 3D).
+// Kolab — core logic (no DOM, no 3D).
 // Reads WBS codes out of IFC text, parses MS Project CSV exports and decides
 // which elements are finished. Kept free of browser APIs so it can be tested
 // in Node and inlined into the page unchanged.
@@ -4407,7 +4407,7 @@ const Zip = (() => {
   return { crc32, write, read };
 })();
 
-// BCF 2.1 read/write for GilBIMCollab issues. An issue ("review" in the
+// BCF 2.1 read/write for Kolab issues. An issue ("review" in the
 // app) becomes one BCF topic: markup.bcf + viewpoint.bcfv + snapshot.png, plus
 // bpv.json holding the viewer's own exact data (pins, sketch colours, history).
 // Coordinates: the viewer works Y-up (web-ifc), BCF/IFC is Z-up.
@@ -4505,7 +4505,7 @@ const Bcf = (() => {
     }
     return `<?xml version="1.0" encoding="UTF-8"?>
 <VisualizationInfo Guid="${vpGuid}" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-${comps.length ? `<Components><Selection>${comps.map((c) => `<Component IfcGuid="${xesc(c.gid)}"><OriginatingSystem>GilBIMCollab</OriginatingSystem></Component>`).join("")}</Selection><Visibility DefaultVisibility="true"/></Components>` : `<Components><Visibility DefaultVisibility="true"/></Components>`}
+${comps.length ? `<Components><Selection>${comps.map((c) => `<Component IfcGuid="${xesc(c.gid)}"><OriginatingSystem>Kolab</OriginatingSystem></Component>`).join("")}</Selection><Visibility DefaultVisibility="true"/></Components>` : `<Components><Visibility DefaultVisibility="true"/></Components>`}
 ${cam}${lines.length ? `<Lines>${lines.join("")}</Lines>` : ""}
 </VisualizationInfo>
 `;
@@ -4659,7 +4659,7 @@ ${comments}
   return { parseXml, xesc, toIfc, fromIfc, topicFiles, zipEntries, parseTopic, parseZipEntries, statusIn, priorityIn, uuid, VERSION_XML };
 })();
 
-// GilBIMCollab — collaboration layer (no DOM). Roles, access rules,
+// Kolab — collaboration layer (no DOM). Roles, access rules,
 // project folder layout, issue/clash persistence and conflict merging on top of
 // any storage that implements the Store interface below. Browser connectors
 // (Google Drive, OneDrive/SharePoint, local synced folder) live in storage.js;
@@ -5535,7 +5535,7 @@ const Storage = (() => {
     }
     async share(path, email, level) {
       const item = await this.resolve(path);
-      await this.api(`/files/${item.id}/permissions?${qs({ ...ALL, sendNotificationEmail: true, emailMessage: "Anda diundang ke proyek di GilBIMCollab." })}`, {
+      await this.api(`/files/${item.id}/permissions?${qs({ ...ALL, sendNotificationEmail: true, emailMessage: "Anda diundang ke proyek di Kolab." })}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "user", role: level === "write" ? "writer" : "reader", emailAddress: email }),
       });
@@ -5720,7 +5720,7 @@ const Storage = (() => {
       const it = await this.item(path);
       await this.api(`/drives/${this.driveId}/items/${it.id}/invite`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requireSignIn: true, sendInvitation: true, roles: [level === "write" ? "write" : "read"], recipients: [{ email }], message: "Anda diundang ke proyek di GilBIMCollab." }),
+        body: JSON.stringify({ requireSignIn: true, sendInvitation: true, roles: [level === "write" ? "write" : "read"], recipients: [{ email }], message: "Anda diundang ke proyek di Kolab." }),
       });
     }
     async perms(path) {
@@ -8304,7 +8304,7 @@ function renderGate() {
   if (gateView === "start") {
     const gOk = !!c.google.clientId && !fileProto, mOk = !!c.microsoft.clientId && !fileProto;
     body = `
-      <h2 id="gate-title">GilBIMCollab</h2>
+      <h2 id="gate-title">Kolab</h2>
       <p class="lead">Review model, progres 4D, clash, dan issue BCF, tersimpan di Google Drive atau OneDrive tim. Akses diatur per email.</p>
       <div class="gate-actions">
         <button class="btn primary big" type="button" data-g="google"${gOk ? "" : " disabled"}>Masuk dengan Google</button>
@@ -8510,7 +8510,7 @@ async function openProject(ref, name) {
   try {
     doc = await Collab.loadProject(store);
   } catch (e) { toast("Proyek tidak bisa dibuka: " + errText(e), "error"); return; }
-  if (!doc) { toast("Folder itu bukan proyek GilBIMCollab, atau Anda belum diundang.", "error"); return; }
+  if (!doc) { toast("Folder itu bukan proyek Kolab, atau Anda belum diundang.", "error"); return; }
   const role = Collab.effectiveRole(doc.data, s.user.email);
   if (!role) {
     toast(`${s.user.email} belum terdaftar di proyek “${doc.data.name}”. Minta Koordinator BIM mengundang email ini.`, "error");
@@ -8886,7 +8886,7 @@ async function exportBcf() {
     topics.push({ review: cleanReview(r), markups: markupsFor(r), snapshot: await snapshotBytes(r) });
   }
   const P = state.project;
-  const bytes = Zip.write(Bcf.zipEntries(topics, P ? { id: P.doc.id, name: P.name } : { name: "GilBIMCollab" }));
+  const bytes = Zip.write(Bcf.zipEntries(topics, P ? { id: P.doc.id, name: P.name } : { name: "Kolab" }));
   const d = new Date();
   const stampFull = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}_${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
   const name = `BCF_${Collab.safeFolder(P ? P.name : "review").replace(/\s+/g, "-")}_${stampFull}.bcfzip`;
