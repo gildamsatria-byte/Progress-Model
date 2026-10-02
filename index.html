@@ -497,6 +497,31 @@ table.perm.roles input[type="checkbox"] { width: 16px; height: 16px; min-width: 
 table.perm.roles td.rn input { min-width: 150px; }
 .perm-chips span.all { font-weight: 600; }
 
+
+/* ---- Last Planner ---- */
+.lp-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.lp-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; background: var(--panel); }
+.lp-item.lp-done { opacity: .6; }
+.lp-name { font-weight: 500; font-size: 13px; }
+.lp-meta { font-size: 12px; color: var(--muted); }
+.lp-tag { font-size: 11px; border-radius: 99px; padding: 0 7px; margin-left: 4px; border: 1px solid var(--line); }
+.lp-tag.ok { color: var(--finish); border-color: var(--finish); }
+.lp-tag.warn { color: var(--unscheduled); border-color: var(--unscheduled); }
+.lp-tag.bad { color: #C0392B; border-color: #C0392B; }
+.lp-week { align-items: center; justify-content: space-between; }
+.lp-ppc { display: flex; gap: 12px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); }
+.lp-ppc-n { font-size: 30px; font-weight: 600; min-width: 74px; }
+.lp-trend { display: flex; gap: 8px; align-items: flex-end; height: 70px; }
+.lp-bar { flex: 0 1 34px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; font-size: 10px; color: var(--muted); }
+.lp-bar i { display: block; width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; }
+.lp-res.on-ok { background: var(--finish); border-color: var(--finish); color: #fff; }
+.lp-res.on-bad { background: #C0392B; border-color: #C0392B; color: #fff; }
+.lp-form { display: grid; gap: 6px; border: 1px dashed var(--accent); border-radius: 8px; padding: 10px; }
+.lp-form input[type="text"], .lp-form select { width: 100%; }
+.lp-reasons { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 12px; }
+.lp-reasons li { display: grid; grid-template-columns: 1fr 70px 24px; gap: 8px; align-items: center; }
+.lp-rbar { background: var(--panel-2); border-radius: 4px; height: 8px; overflow: hidden; }
+.lp-rbar i { display: block; height: 100%; background: var(--accent); }
 </style>
 </head>
 <body>
@@ -536,6 +561,7 @@ if (window.opener && window.name === "bpv-login" && /[?&](code|error)=/.test(loc
       <button role="tab" id="tab-progress" aria-controls="panel-progress" aria-selected="true" type="button">Progres</button>
       <button role="tab" id="tab-review" aria-controls="panel-review" aria-selected="false" type="button">Review <span class="badge" id="badge-review"></span></button>
       <button role="tab" id="tab-clash" aria-controls="panel-clash" aria-selected="false" type="button">Clash <span class="badge" id="badge-clash"></span></button>
+      <button role="tab" id="tab-lean" aria-controls="panel-lean" aria-selected="false" type="button">Rencana <span class="badge" id="badge-lean"></span></button>
       <button role="tab" id="tab-team" aria-controls="panel-team" aria-selected="false" type="button" hidden>Tim</button>
     </nav>
 
@@ -700,6 +726,7 @@ if (window.opener && window.name === "bpv-login" && /[?&](code|error)=/.test(loc
     </div>
 
     <!-- ============ TIM ============ -->
+    <div role="tabpanel" id="panel-lean" aria-labelledby="tab-lean" hidden></div>
     <div role="tabpanel" id="panel-team" aria-labelledby="tab-team" hidden></div>
   </aside>
 
@@ -6295,6 +6322,7 @@ function rebuildSchedule() {
   if (!state.csv || state.cols.wbs < 0) { state.schedule = null; rebuildEvm(); updateDateHint(); return; }
   state.schedule = Core.buildSchedule(state.csv, state.cols, state.finishText, state.dateOrder === "auto" ? null : state.dateOrder, state.linkKey);
   rebuildEvm();
+  if (typeof renderLean === "function") renderLean();
   if (state.cols.status < 0) state.schedule.noStatus = true;
   const r = state.schedule.range;
   if (r && (state.time.day == null || state.time.day < r.min || state.time.day > r.max)) {
@@ -7334,14 +7362,257 @@ function stopPlay() {
   renderTimeline();
 }
 
+// ---------- Last Planner (lean construction) ----------
+// Lookahead 6 minggu dari jadwal, daftar kendala, komitmen mingguan, PPC dan alasan variansi.
+// Data disimpan di browser (localStorage) per proyek; sinkron ke Drive belum tersedia.
+const LEAN_REASONS = {
+  gambar: "Gambar / informasi belum siap", material: "Material terlambat", tenaga: "Tenaga kerja kurang",
+  alat: "Alat tidak tersedia", pendahulu: "Pekerjaan pendahulu belum selesai", cuaca: "Cuaca",
+  izin: "Izin / akses / K3", mutu: "Pengerjaan ulang (mutu)", lain: "Lainnya",
+};
+const LEAN_KINDS = {
+  gambar: "Gambar / RFI", material: "Material", tenaga: "Tenaga kerja", alat: "Alat",
+  izin: "Izin / akses / K3", pendahulu: "Pekerjaan pendahulu", lain: "Lainnya",
+};
+const LEAN_HORIZON = 6; // minggu lookahead
+state.lean = { constraints: [], commits: [] };
+state.leanKey = null;
+state.leanWeek = null;   // hari Senin (nomor hari), null = ikut tanggal status
+state.leanDraft = null;  // {wbs} saat menambah kendala
+state.leanAll = false;
+
+const leanMonday = (day) => day - ((day + 3) % 7); // hari 0 = Kamis (1 Jan 1970)
+const leanFmt = (day) => new Date(day * 864e5).toLocaleDateString("id-ID", { day: "numeric", month: "short", timeZone: "UTC" });
+const leanFmtY = (day) => new Date(day * 864e5).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const leanId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const leanCan = () => canDo("comment");
+function leanStoreKey() { return "bpv.lean.v1:" + (state.project ? "p:" + (state.project.name || "proyek") : "local"); }
+function leanLoad() {
+  const k = leanStoreKey();
+  if (state.leanKey === k) return;
+  state.leanKey = k;
+  state.lean = { constraints: [], commits: [] };
+  try {
+    const j = JSON.parse(localStorage.getItem(k) || "null");
+    if (j && Array.isArray(j.constraints) && Array.isArray(j.commits)) state.lean = { constraints: j.constraints, commits: j.commits };
+  } catch { /* storage unavailable */ }
+}
+function leanSave() { try { localStorage.setItem(state.leanKey, JSON.stringify(state.lean)); } catch { /* ignore */ } }
+
+function leanWeekStart() { return state.leanWeek != null ? state.leanWeek : leanMonday(state.time.statusDay); }
+
+// Aktivitas daun dari jadwal: {wbs, id, name, zone, s, f, done}
+function leanActivities() {
+  const S = state.schedule;
+  if (!S || !S.dates || !S.dates.size) return [];
+  const c = state.cols, out = [];
+  for (const [w, d] of S.dates) {
+    if (S.summary.has(w)) continue;
+    const row = S.rowsByWbs.get(w) || [];
+    let zone = "";
+    for (let p = w.split(".").slice(0, -1); p.length; p = p.slice(0, -1)) {
+      const pr = S.rowsByWbs.get(p.join("."));
+      if (pr && c.name >= 0 && String(pr[c.name] || "").trim()) { zone = String(pr[c.name]).trim(); break; }
+    }
+    out.push({
+      wbs: w, id: c.id >= 0 ? String(row[c.id] ?? "").trim() : "", name: c.name >= 0 ? String(row[c.name] ?? "").trim() || w : w,
+      zone, s: d.s, f: d.f, done: S.finish.has(w),
+    });
+  }
+  return out.sort((a, b) => a.s - b.s || a.f - b.f);
+}
+const leanOpenFor = (wbs) => state.lean.constraints.filter((k) => k.wbs === wbs && !k.done);
+const leanPpc = (commits) => {
+  const n = commits.length, ok = commits.filter((c) => c.result === "done").length;
+  return { n, ok, pending: commits.filter((c) => !c.result).length, pct: n ? Math.round((ok / n) * 100) : null };
+};
+
+function renderLean() {
+  const el = $("panel-lean");
+  if (!el) return;
+  leanLoad();
+  const open = state.lean.constraints.filter((k) => !k.done).length;
+  $("badge-lean").textContent = open ? String(open) : "";
+  if (state.tab !== "lean") return;
+  const acts = leanActivities();
+  if (!acts.length) {
+    el.innerHTML = `<section class="sec"><h2>Last Planner</h2><p class="hint">Muat jadwal (CSV) dengan kolom tanggal mulai dan selesai di tab Progres. Rencana mingguan dan lookahead disusun dari jadwal itu.</p></section>`;
+    return;
+  }
+  const edit = leanCan();
+  const W = leanWeekStart(), WE = W + 6, HZ = W + LEAN_HORIZON * 7 - 1;
+  const byWbs = new Map(acts.map((a) => [a.wbs, a]));
+  const commitsW = state.lean.commits.filter((c) => c.week === W);
+  const committed = new Set(commitsW.map((c) => c.wbs));
+  const P = leanPpc(commitsW);
+  const lookahead = acts.filter((a) => !a.done && a.s <= HZ && a.f >= W - 14);
+  const shown = state.leanAll ? lookahead : lookahead.slice(0, 25);
+
+  const weeks = [...new Set(state.lean.commits.map((c) => c.week))].sort((a, b) => a - b).slice(-8);
+  const trend = weeks.map((w) => ({ w, p: leanPpc(state.lean.commits.filter((c) => c.week === w)) }));
+  const reasons = {};
+  for (const c of state.lean.commits) if (c.result === "notdone") reasons[c.reason || "lain"] = (reasons[c.reason || "lain"] || 0) + 1;
+  const reasonRows = Object.entries(reasons).sort((a, b) => b[1] - a[1]);
+  const rMax = reasonRows.length ? reasonRows[0][1] : 1;
+
+  const opt = (map, sel) => Object.entries(map).map(([k, l]) => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(l)}</option>`).join("");
+  const actLabel = (a) => `${a.id ? a.id + " · " : ""}${a.name}`;
+
+  const draft = state.leanDraft;
+  const draftForm = draft && edit ? `<div class="lp-form" id="lp-form">
+      <strong>Kendala baru</strong>
+      <select data-lf="wbs">${acts.filter((a) => !a.done).map((a) => `<option value="${esc(a.wbs)}"${a.wbs === draft.wbs ? " selected" : ""}>${esc(actLabel(a))}</option>`).join("")}</select>
+      <select data-lf="kind">${opt(LEAN_KINDS)}</select>
+      <input type="text" data-lf="text" placeholder="Apa yang menghambat? (mis. shop drawing belum disetujui)">
+      <div class="row"><input type="text" data-lf="owner" placeholder="Penanggung jawab"><input type="date" data-lf="due" aria-label="Target selesai"></div>
+      <div class="row"><button class="btn primary sm" type="button" data-act="lp-add-constraint">Simpan kendala</button><button class="btn sm" type="button" data-act="lp-cancel-draft">Batal</button></div>
+    </div>` : "";
+
+  const look = shown.map((a) => {
+    const n = leanOpenFor(a.wbs).length;
+    const late = a.f < W;
+    const inCommit = committed.has(a.wbs);
+    const ready = n ? `<span class="lp-tag warn">${n} kendala</span>` : `<span class="lp-tag ok">siap</span>`;
+    const lateTag = late ? `<span class="lp-tag bad">terlambat</span>` : "";
+    return `<li class="lp-item">
+      <div class="lp-name">${esc(actLabel(a))}</div>
+      <div class="lp-meta">${esc(a.zone || "—")} · ${leanFmt(a.s)}–${leanFmt(a.f)} ${ready}${lateTag}</div>
+      ${edit ? `<div class="row">
+        ${inCommit ? `<span class="hint">Sudah dikomit minggu ini</span>` : `<button class="btn sm" type="button" data-act="lp-commit" data-wbs="${esc(a.wbs)}">Komit minggu ini</button>`}
+        <button class="btn sm" type="button" data-act="lp-new-constraint" data-wbs="${esc(a.wbs)}">+ Kendala</button>
+      </div>` : ""}
+    </li>`;
+  }).join("");
+
+  const commitHtml = commitsW.map((c) => {
+    const a = byWbs.get(c.wbs);
+    return `<li class="lp-item">
+      <div class="lp-name">${esc(a ? actLabel(a) : c.wbs)}</div>
+      <div class="lp-meta">${esc((a && a.zone) || "—")}</div>
+      <div class="row">
+        <input type="text" data-cf="owner" data-cid="${c.id}" value="${esc(c.owner || "")}" placeholder="Pelaksana / subkon" ${edit ? "" : "disabled"}>
+      </div>
+      <div class="row">
+        <button class="btn sm lp-res${c.result === "done" ? " on-ok" : ""}" type="button" data-act="lp-result" data-cid="${c.id}" data-r="done" ${edit ? "" : "disabled"}>Selesai</button>
+        <button class="btn sm lp-res${c.result === "notdone" ? " on-bad" : ""}" type="button" data-act="lp-result" data-cid="${c.id}" data-r="notdone" ${edit ? "" : "disabled"}>Tidak selesai</button>
+        ${edit ? `<button class="btn link" type="button" data-act="lp-del-commit" data-cid="${c.id}">Hapus</button>` : ""}
+      </div>
+      ${c.result === "notdone" ? `<select data-cf="reason" data-cid="${c.id}" ${edit ? "" : "disabled"}>${opt(LEAN_REASONS, c.reason || "lain")}</select>` : ""}
+    </li>`;
+  }).join("");
+
+  const cons = state.lean.constraints.slice().sort((a, b) => (a.done - b.done) || String(a.due || "9").localeCompare(String(b.due || "9"))).map((k) => {
+    const a = byWbs.get(k.wbs);
+    return `<li class="lp-item${k.done ? " lp-done" : ""}">
+      <div class="lp-name">${esc(k.text)}</div>
+      <div class="lp-meta">${esc(LEAN_KINDS[k.kind] || k.kind)} · ${esc(a ? actLabel(a) : k.wbs)}${k.owner ? " · PJ: " + esc(k.owner) : ""}${k.due ? " · target " + esc(k.due) : ""}</div>
+      ${edit ? `<div class="row"><button class="btn sm" type="button" data-act="lp-toggle-constraint" data-kid="${k.id}">${k.done ? "Buka lagi" : "Tandai selesai"}</button><button class="btn link" type="button" data-act="lp-del-constraint" data-kid="${k.id}">Hapus</button></div>` : ""}
+    </li>`;
+  }).join("");
+
+  el.innerHTML = `
+    <section class="sec">
+      <h2>Rencana mingguan</h2>
+      <div class="row lp-week">
+        <button class="btn sm" type="button" data-act="lp-prev" aria-label="Minggu sebelumnya">‹</button>
+        <strong class="num">${leanFmt(W)} – ${leanFmtY(WE)}</strong>
+        <button class="btn sm" type="button" data-act="lp-next" aria-label="Minggu berikutnya">›</button>
+        ${state.leanWeek != null ? `<button class="btn link" type="button" data-act="lp-today">Ikut tanggal status</button>` : ""}
+      </div>
+      <div class="lp-ppc">
+        <div class="lp-ppc-n num">${P.pct == null ? "—" : P.pct + "%"}</div>
+        <div><strong>PPC minggu ini</strong><div class="hint">${P.n ? `${P.ok} dari ${P.n} komitmen selesai${P.pending ? ` · ${P.pending} belum dinilai` : ""}` : "Belum ada komitmen. Pilih pekerjaan siap dari lookahead di bawah."}</div></div>
+      </div>
+      ${trend.length ? `<div class="lp-trend" aria-label="Tren PPC per minggu">${trend.map((t) => `<div class="lp-bar" title="${leanFmt(t.w)}: ${t.p.pct == null ? "—" : t.p.pct + "%"}"><i style="height:${t.p.pct || 0}%"></i><span>${leanFmt(t.w)}</span></div>`).join("")}</div>` : ""}
+      <ul class="lp-list">${commitHtml || ""}</ul>
+    </section>
+    <section class="sec">
+      <h2>Lookahead ${LEAN_HORIZON} minggu</h2>
+      <p class="hint">Pekerjaan yang belum selesai dan jatuh dalam ${LEAN_HORIZON} minggu ke depan. Pekerjaan hanya boleh dikomit jika semua kendalanya sudah selesai.</p>
+      <ul class="lp-list">${look || `<li class="hint">Tidak ada pekerjaan dalam rentang ini.</li>`}</ul>
+      ${lookahead.length > shown.length ? `<button class="btn sm" type="button" data-act="lp-more">Tampilkan semua (${lookahead.length})</button>` : ""}
+    </section>
+    <section class="sec">
+      <h2>Daftar kendala <span class="badge">${open}</span></h2>
+      ${draftForm}
+      ${!draft && edit ? `<button class="btn sm" type="button" data-act="lp-new-constraint">+ Tambah kendala</button>` : ""}
+      <ul class="lp-list">${cons || `<li class="hint">Belum ada kendala tercatat.</li>`}</ul>
+    </section>
+    <section class="sec">
+      <h2>Alasan pekerjaan tidak selesai</h2>
+      ${reasonRows.length ? `<ul class="lp-reasons">${reasonRows.map(([k, n]) => `<li><span>${esc(LEAN_REASONS[k] || k)}</span><span class="lp-rbar"><i style="width:${Math.round((n / rMax) * 100)}%"></i></span><b class="num">${n}</b></li>`).join("")}</ul>` : `<p class="hint">Terisi otomatis saat komitmen ditandai tidak selesai beserta alasannya.</p>`}
+      <div class="row"><button class="btn sm" type="button" data-act="lp-export">Ekspor CSV</button></div>
+      <p class="hint">Data Last Planner tersimpan di browser ini per proyek. Sinkron ke Drive tim belum tersedia; ekspor CSV untuk arsip atau rapat mingguan.</p>
+    </section>`;
+}
+
+function leanExportCsv() {
+  const acts = new Map(leanActivities().map((a) => [a.wbs, a]));
+  const name = (w) => { const a = acts.get(w); return a ? (a.id ? a.id + " " : "") + a.name : w; };
+  const rows = state.lean.commits.slice().sort((a, b) => a.week - b.week).map((c) => [
+    Core.dayToIso(c.week), c.wbs, name(c.wbs), (acts.get(c.wbs) || {}).zone || "", c.owner || "",
+    c.result === "done" ? "Selesai" : c.result === "notdone" ? "Tidak selesai" : "Belum dinilai", c.result === "notdone" ? LEAN_REASONS[c.reason || "lain"] : "",
+  ]);
+  const cr = state.lean.constraints.map((k) => ["", k.wbs, name(k.wbs), LEAN_KINDS[k.kind] || k.kind, k.owner || "", k.done ? "Kendala selesai" : "Kendala terbuka", k.text + (k.due ? " (target " + k.due + ")" : "")]);
+  download(`last-planner-${stamp()}.csv`, Core.toCsv(["Minggu (Senin)", "WBS", "Pekerjaan", "Zona / jenis", "Pelaksana / PJ", "Status", "Alasan / uraian"], rows.concat(cr)), "text/csv");
+}
+
+function leanClick(ev) {
+  const t = ev.target.closest("[data-act]");
+  if (!t || !t.dataset.act.startsWith("lp-")) return;
+  const a = t.dataset.act, L = state.lean;
+  if (a !== "lp-prev" && a !== "lp-next" && a !== "lp-today" && a !== "lp-more" && a !== "lp-export" && !leanCan()) { toast("Peran Anda tidak bisa mengubah rencana", "error"); return; }
+  if (a === "lp-prev") state.leanWeek = leanWeekStart() - 7;
+  else if (a === "lp-next") state.leanWeek = leanWeekStart() + 7;
+  else if (a === "lp-today") state.leanWeek = null;
+  else if (a === "lp-more") state.leanAll = true;
+  else if (a === "lp-export") { leanExportCsv(); return; }
+  else if (a === "lp-commit") {
+    const w = t.dataset.wbs, n = leanOpenFor(w).length;
+    if (n) { toast(`Masih ada ${n} kendala terbuka. Selesaikan dulu sebelum dikomit.`, "error"); return; }
+    L.commits.push({ id: leanId(), week: leanWeekStart(), wbs: w, owner: "", result: null, reason: "", by: reviewer() });
+    leanSave();
+  } else if (a === "lp-result") {
+    const c = L.commits.find((x) => x.id === t.dataset.cid);
+    if (c) { c.result = c.result === t.dataset.r ? null : t.dataset.r; if (c.result === "notdone" && !c.reason) c.reason = "lain"; leanSave(); }
+  } else if (a === "lp-del-commit") { L.commits = L.commits.filter((x) => x.id !== t.dataset.cid); leanSave(); }
+  else if (a === "lp-new-constraint") {
+    const first = leanActivities().find((x) => !x.done);
+    state.leanDraft = { wbs: t.dataset.wbs || (first && first.wbs) || "" };
+  } else if (a === "lp-cancel-draft") state.leanDraft = null;
+  else if (a === "lp-add-constraint") {
+    const g = (n) => { const e = $("panel-lean").querySelector(`[data-lf="${n}"]`); return e ? e.value.trim() : ""; };
+    if (!g("text")) { toast("Tulis uraian kendalanya", "error"); return; }
+    L.constraints.push({ id: leanId(), wbs: g("wbs"), kind: g("kind"), text: g("text"), owner: g("owner"), due: g("due"), done: false, by: reviewer(), created: todayIso() });
+    state.leanDraft = null; leanSave();
+  } else if (a === "lp-toggle-constraint") {
+    const k = L.constraints.find((x) => x.id === t.dataset.kid);
+    if (k) { k.done = !k.done; leanSave(); }
+  } else if (a === "lp-del-constraint") { L.constraints = L.constraints.filter((x) => x.id !== t.dataset.kid); leanSave(); }
+  renderLean();
+  if (a === "lp-new-constraint") { const f = $("lp-form"); if (f) f.scrollIntoView({ block: "nearest" }); }
+}
+function leanChange(ev) {
+  const t = ev.target;
+  if (!t.dataset || !t.dataset.cf || !leanCan()) return;
+  const c = state.lean.commits.find((x) => x.id === t.dataset.cid);
+  if (!c) return;
+  c[t.dataset.cf] = t.value.trim();
+  leanSave();
+  if (t.dataset.cf === "reason") renderLean();
+}
+$("panel-lean").addEventListener("click", leanClick);
+$("panel-lean").addEventListener("change", leanChange);
+
 // ---------- tabs, modes ----------
 function setTab(t) {
   state.tab = t;
   if (t === "team" && typeof renderTeam === "function") renderTeam();
-  for (const k of ["progress", "review", "clash", "team"]) {
+  for (const k of ["progress", "review", "clash", "lean", "team"]) {
     $("tab-" + k).setAttribute("aria-selected", String(k === t));
     $("panel-" + k).hidden = k !== t;
   }
+  if (t === "lean") renderLean();
   rebuildLabels();
 }
 function setMode(mode) {
@@ -7407,13 +7678,14 @@ async function importReviewFile(file, quiet = false) {
 $("mode-finish").onclick = () => setMode("finish");
 $("mode-all").onclick = () => setMode("all");
 $("mode-4d").onclick = () => setMode("4d");
-for (const k of ["progress", "review", "clash", "team"]) $("tab-" + k).onclick = () => setTab(k);
+for (const k of ["progress", "review", "clash", "lean", "team"]) $("tab-" + k).onclick = () => setTab(k);
+$("tab-lean").addEventListener("keydown", tabKeys);
 $("tab-team").addEventListener("keydown", tabKeys);
 $("tab-review").addEventListener("keydown", tabKeys);
 $("tab-progress").addEventListener("keydown", tabKeys);
 $("tab-clash").addEventListener("keydown", tabKeys);
 function tabKeys(ev) {
-  const order = ["progress", "review", "clash", "team"].filter((k) => !$("tab-" + k).hidden);
+  const order = ["progress", "review", "clash", "lean", "team"].filter((k) => !$("tab-" + k).hidden);
   const i = order.indexOf(state.tab);
   if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
     const n = order[(i + (ev.key === "ArrowRight" ? 1 : order.length - 1)) % order.length];
