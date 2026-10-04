@@ -9719,7 +9719,7 @@ function gsExportJson() { const { holiSet, calc, _key, ...rest } = state.gantt; 
 async function gsImportJson(file) { try { const d = JSON.parse(await file.text()); if (!Array.isArray(d.tasks)) throw new Error("bukan file jadwal Gantt"); state.gantt = Object.assign(gsNew(), d); state.gantt.holiSet = new Set((state.gantt.holidays || []).map(Core.isoToDay).filter((x) => x != null)); gsCommit(); recompute(); gsToast(`${d.tasks.length} tugas dimuat dari ${file.name}.`); } catch (e) { alert("File jadwal tidak bisa dibaca: " + e.message); } }
 (function gsUI() {
   const css = document.createElement("style");
-  css.textContent = `.main.gs-open{grid-template-rows:minmax(160px,1fr) var(--gs-h,42vh);grid-template-columns:360px minmax(0,1fr)}.main.gs-open .side{grid-row:1/3}
+  css.textContent = `@media (min-width:821px){.main.gs-open{grid-template-rows:minmax(160px,1fr) var(--gs-h,42vh);grid-template-columns:360px minmax(0,1fr)}.main.gs-open .side{grid-row:1/3}}@media (max-width:820px){#gs{grid-column:1!important;grid-row:auto!important;height:70vh;order:-1}}
 #gs{grid-column:2;grid-row:2;min-width:0;overflow:hidden;display:flex;flex-direction:column;min-height:0;border-top:1px solid var(--line);background:var(--panel);position:relative}
 #gs .gs-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line)}
 #gs .gs-bar .btn{padding:3px 9px;font-size:12px}#gs .gs-bar label{font-size:12px;color:var(--muted);display:inline-flex;gap:4px;align-items:center}
@@ -9821,6 +9821,402 @@ async function gsImportJson(file) { try { const d = JSON.parse(await file.text()
   gsLoad();
 })();
 Object.assign(window.__bpv || {}, { gsToggle, gsFromModel, gsFromCsv, gsApply, gsCalc, gsOp });
+
+// ===================== Gantt: kode WBS tetap, impor MS Project XML, simpan ke Google Drive, template CSV =====================
+gsRecode = function () { const cnt = []; for (const t of state.gantt.tasks) { cnt.length = t.lvl + 1; cnt[t.lvl] = (cnt[t.lvl] || 0) + 1; const auto = cnt.slice(0, t.lvl + 1).map((x) => x || 1).join("."); if (!(t.fixed && t.code)) t.code = auto; } };
+// impor MS Project XML (MSPDI: File → Simpan Sebagai → XML)
+function gsFromMsXml(text, fileName) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length) throw new Error("XML tidak valid");
+  const root = doc.documentElement; if (!/project/i.test(root.localName)) throw new Error("Bukan file XML MS Project");
+  const kid = (el, tag) => { for (const c of el.children) if (c.localName === tag) return c.textContent.trim(); return ""; };
+  const kids = (el, tag) => [...el.children].filter((c) => c.localName === tag);
+  const mpd = +kid(root, "MinutesPerDay") || 480;
+  const dur = (s) => { const m = /P(?:(\d+(?:\.\d+)?)D)?T?(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?/.exec(s || ""); if (!m) return 0; return ((+m[1] || 0) * mpd + (+m[2] || 0) * 60 + (+m[3] || 0) + (+m[4] || 0) / 60) / mpd; };
+  const day = (s) => (s ? Core.isoToDay(s.slice(0, 10)) : null);
+  const tasksEl = root.getElementsByTagName("Tasks")[0]; if (!tasksEl) throw new Error("Tidak ada <Tasks> di file");
+  const out = [], byUid = new Map(); let minS = Infinity;
+  for (const t of kids(tasksEl, "Task")) {
+    const uid = kid(t, "UID"), lvl = +kid(t, "OutlineLevel"); if (uid === "0" || lvl === 0 || kid(t, "IsNull") === "1") continue;
+    const s = day(kid(t, "Start")), f = day(kid(t, "Finish")); if (s != null) minS = Math.min(minS, s);
+    const bl = kids(t, "Baseline").find((b) => kid(b, "Number") === "0");
+    const cost = +kid(t, "Cost") || 0, d = Math.round(dur(kid(t, "Duration")) * 100) / 100;
+    const task = { id: out.length + 1, uid, name: kid(t, "Name") || "Tugas", lvl: Math.max(0, (lvl || 1) - 1), code: kid(t, "WBS") || kid(t, "OutlineNumber"), fixed: true,
+      dur: kid(t, "Milestone") === "1" ? 0 : Math.max(kid(t, "Summary") === "1" ? 0 : 1, Math.round(d)), cons: s != null ? Core.dayToIso(s) : null, pct: +kid(t, "PercentComplete") || 0,
+      w: cost > 0 ? cost : null, pred: [], links: [], _p: kids(t, "PredecessorLink") };
+    if (bl && kid(bl, "Start") && kid(bl, "Finish")) { task.bs = kid(bl, "Start").slice(0, 10); task.bf = kid(bl, "Finish").slice(0, 10); }
+    out.push(task); byUid.set(uid, task);
+  }
+  const TYPES = { 0: "FF", 1: "FS", 2: "SF", 3: "SS" };
+  for (const task of out) { for (const p of task._p) { const src = byUid.get(kid(p, "PredecessorUID")); if (!src) continue; const lag = Math.round((+kid(p, "LinkLag") || 0) / 10 / mpd); task.pred.push({ id: src.id, type: TYPES[+kid(p, "Type")] || "FS", lag }); } delete task._p; delete task.uid; }
+  if (!out.length) throw new Error("File tidak berisi tugas");
+  const g = state.gantt; g.tasks = out; g.start = Core.dayToIso(minS === Infinity ? Core.todayDay() : minS); g.active = null; gsNormalizeLevels();
+  gsCommit(); gsApply(); gsToast(`${out.length} tugas diimpor dari ${fileName || "MS Project XML"}.`);
+}
+async function gsImportFile(file) {
+  if (!file) return;
+  if (/\.mpp$/i.test(file.name)) { alert("File .mpp (format biner MS Project) tidak bisa dibaca langsung di browser.\n\nDi MS Project: File → Simpan Sebagai → pilih jenis \"XML Format (*.xml)\", lalu impor file .xml tersebut."); return; }
+  try { const text = await file.text(); if (!$("gs") || $("gs").hidden) gsToggle(true); if (state.gantt.tasks.length && !confirm("Ganti jadwal Gantt sekarang dengan isi " + file.name + "?")) return; gsFromMsXml(text, file.name); }
+  catch (e) { alert("File MS Project tidak bisa dibaca: " + e.message); }
+}
+// Google Drive milik pengguna (izin drive.file: hanya file buatan Kolab)
+const GSD = { cid: "440057667141-v9fa7kjfq3mpig3klge7n3alfocnfahm.apps.googleusercontent.com", tok: null, exp: 0, fileId: null, fileName: "" };
+try { const j = JSON.parse(localStorage.getItem("bpv.gantt.drive") || "null"); if (j) { GSD.fileId = j.fileId; GSD.fileName = j.fileName; } } catch { /* abaikan */ }
+function gsdLoadGsi() { return new Promise((res, rej) => { if (window.google && google.accounts && google.accounts.oauth2) return res(); const s = document.createElement("script"); s.src = "https://accounts.google.com/gsi/client"; s.onload = () => res(); s.onerror = () => rej(new Error("Gagal memuat Google Sign-In")); document.head.appendChild(s); }); }
+async function gsdToken() {
+  if (GSD.tok && Date.now() < GSD.exp) return GSD.tok; await gsdLoadGsi();
+  return new Promise((res, rej) => { const c = google.accounts.oauth2.initTokenClient({ client_id: GSD.cid, scope: "https://www.googleapis.com/auth/drive.file", login_hint: (state.session && state.session.user && state.session.user.email) || undefined,
+    callback: (r) => { if (r.error) return rej(new Error(r.error_description || r.error)); GSD.tok = r.access_token; GSD.exp = Date.now() + ((+r.expires_in || 3600) - 60) * 1000; res(GSD.tok); },
+    error_callback: (e) => rej(new Error(e && e.type === "popup_closed" ? "Jendela izin ditutup" : "Izin Google Drive tidak diberikan")) }); c.requestAccessToken(); });
+}
+async function gsdFetch(url, opt = {}) { const r = await fetch(url, { ...opt, headers: { Authorization: "Bearer " + GSD.tok, ...(opt.headers || {}) } }); if (!r.ok) { let m = r.status; try { m = (await r.json()).error.message; } catch { /* - */ } const e = new Error(m); e.status = r.status; throw e; } return r; }
+async function gsDriveSave() {
+  try { await gsdToken(); const { holiSet, calc, _key, ...rest } = state.gantt, body = JSON.stringify({ app: "kolab-gantt", version: 1, ...rest });
+    const name = GSD.fileName || `Jadwal-${(state.project && state.project.name) || "Kolab"}.kolabgantt.json`, b = "kolab" + Date.now();
+    const meta = GSD.fileId ? { name } : { name, mimeType: "application/json" };
+    const mp = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${b}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${b}--`;
+    const up = (id) => gsdFetch("https://www.googleapis.com/upload/drive/v3/files" + (id ? "/" + id : "") + "?uploadType=multipart&fields=id,name", { method: id ? "PATCH" : "POST", headers: { "Content-Type": "multipart/related; boundary=" + b }, body: mp });
+    let r; try { r = await up(GSD.fileId); } catch (e) { if (GSD.fileId && e.status === 404) { GSD.fileId = null; r = await up(null); } else throw e; }
+    const j = await r.json(); GSD.fileId = j.id; GSD.fileName = j.name; localStorage.setItem("bpv.gantt.drive", JSON.stringify({ fileId: j.id, fileName: j.name })); gsToast("Tersimpan ke Google Drive Anda: " + j.name);
+  } catch (e) { alert("Gagal menyimpan ke Google Drive: " + e.message); }
+}
+async function gsDriveOpen() {
+  try { await gsdToken(); const q = encodeURIComponent("trashed=false and name contains '.kolabgantt'"); const L = (await (await gsdFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&orderBy=modifiedTime%20desc&pageSize=30&fields=files(id,name,modifiedTime)`)).json()).files || [];
+    if (!L.length) { alert("Belum ada file jadwal Kolab di Google Drive Anda. Klik “☁ Simpan ke Drive” dulu."); return; }
+    const pickN = prompt("File jadwal di Google Drive Anda:\n\n" + L.map((f, i) => `${i + 1}. ${f.name}  (${new Date(f.modifiedTime).toLocaleString("id-ID")})`).join("\n") + "\n\nKetik nomor file yang akan dibuka:", "1");
+    const f = L[(+pickN || 0) - 1]; if (!f) return;
+    const d = await (await gsdFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?alt=media`)).json();
+    if (!Array.isArray(d.tasks)) throw new Error("bukan file jadwal Gantt");
+    state.gantt = Object.assign(gsNew(), d, { _key: GS_KEY() }); state.gantt.holiSet = new Set((state.gantt.holidays || []).map(Core.isoToDay).filter((x) => x != null));
+    GSD.fileId = f.id; GSD.fileName = f.name; localStorage.setItem("bpv.gantt.drive", JSON.stringify({ fileId: f.id, fileName: f.name }));
+    gsCommit(); recompute(); gsToast(`${d.tasks.length} tugas dimuat dari Google Drive: ${f.name}`);
+  } catch (e) { alert("Gagal membuka dari Google Drive: " + e.message); }
+}
+// kode WBS bisa diedit (agar cocok dengan properti WBS di IFC)
+{ const _r = gsRender; gsRender = function () { _r.apply(this, arguments); for (const td of document.querySelectorAll("#gs-rows td.cd")) { const tr = td.closest("tr"), t = state.gantt.tasks[+tr.dataset.gi]; if (!t) continue; td.innerHTML = `<input data-gf="code" value="${esc(t.code)}" title="Kode WBS — samakan dengan properti WBS di model IFC. ${t.fixed ? "Kode ditetapkan manual/impor." : "Otomatis dari indentasi."}" style="${t.fixed ? "color:var(--accent)" : ""}">`; } }; }
+$("gs").addEventListener("change", (ev) => { const inp = ev.target; if (inp.dataset.gf !== "code") return; const t = state.gantt.tasks[+inp.closest("tr").dataset.gi]; const v = Core.normWbs(inp.value); if (v) { t.code = v; t.fixed = true; } else t.fixed = false; gsCommit(); recompute(); applyVisuals(); }, true);
+(function gsUI2() {
+  const bar = $("gs").querySelector(".gs-bar"), mk = (id, txt, title) => { const b = document.createElement("button"); b.className = "btn"; b.id = id; b.type = "button"; b.textContent = txt; b.title = title; return b; };
+  const xml = mk("gs-xml", "⇪ MS Project (.xml)", "Impor langsung dari MS Project: File → Simpan Sebagai → XML Format"), inX = document.createElement("input"); inX.type = "file"; inX.accept = ".xml,.mpp"; inX.hidden = true; inX.id = "gs-in-xml";
+  const recode = mk("gs-recode", "WBS otomatis", "Kembalikan semua kode WBS ke penomoran otomatis dari indentasi");
+  $("gs-fromcsv").after(xml, inX, recode);
+  xml.onclick = () => inX.click(); inX.onchange = () => { gsImportFile(inX.files[0]); inX.value = ""; };
+  recode.onclick = () => { if (!confirm("Kembalikan semua kode WBS ke penomoran otomatis? Tautan dari properti WBS di IFC bisa berubah.")) return; for (const t of state.gantt.tasks) t.fixed = false; gsCommit(); recompute(); };
+  $("gs-save").textContent = "💾 Simpan file"; $("gs-open").textContent = "📂 Buka file";
+  const ds = mk("gs-dsave", "☁ Simpan ke Drive", "Simpan jadwal ke Google Drive Anda sendiri"), dop = mk("gs-dopen", "☁ Buka dari Drive", "Buka jadwal dari Google Drive Anda");
+  $("gs-open").after(ds, dop); ds.onclick = gsDriveSave; dop.onclick = gsDriveOpen;
+  // dekat tombol "Pilih file CSV": unduh template + impor MS Project XML
+  const row = $("btn-csv").parentNode, a = document.createElement("a"); a.className = "btn"; a.href = "template/Template-Jadwal-Kolab.csv"; a.download = "Template-Jadwal-Kolab.csv"; a.textContent = "⬇ Template CSV"; a.title = "Contoh format CSV jadwal yang bisa dibaca Kolab";
+  const x2 = document.createElement("button"); x2.className = "btn"; x2.type = "button"; x2.textContent = "⇪ Impor MS Project (.xml)"; x2.title = "Langsung dari MS Project: File → Simpan Sebagai → XML Format. Jadwal masuk ke panel Gantt dan langsung diterapkan ke model.";
+  row.append(a, x2); x2.onclick = () => inX.click();
+  const hint = document.createElement("p"); hint.className = "hint"; hint.innerHTML = 'Format: satu baris per tugas, kolom <span class="mono">WBS</span> wajib (sama dengan properti WBS di IFC), plus Mulai, Selesai, Status, % Selesai, Bobot, Baseline. Unduh template untuk contoh. File <span class="mono">.mpp</span>: simpan dulu sebagai XML dari MS Project.';
+  row.after(hint);
+})();
+handleFiles = (function (_h) { return async function (fileList) { const files = [...fileList], xmls = files.filter((f) => /\.(xml|mpp)$/i.test(f.name)); for (const f of xmls) { if (/\.mpp$/i.test(f.name) || /<Project[\s>]/.test((await f.text()).slice(0, 4000))) { await gsImportFile(f); break; } } const rest = files.filter((f) => !/\.(xml|mpp)$/i.test(f.name)); if (rest.length) return _h(rest); }; })(handleFiles);
+Object.assign(window.__bpv || {}, { gsFromMsXml, gsImportFile });
+
+// ===================== Inspeksi lapangan (foto, komentar perlu respon, laporan, koordinat global) =====================
+// Data per inspeksi: {id, guid, title, cat, prio, status, assignee, due, author, created, updated, desc, level, element, photos:[{id,data,cap,ts,by}],
+//   gps:{lat,lon,alt,acc,ts}, point:[x,y,z] (koordinat model, opsional — dipilih manual), thread:[{id,author,ts,text,kind,photos}], deleted}
+// Penyimpanan: proyek bersama → file "03_Issues/inspeksi-<guid>.json" (satu file per inspeksi, digabung saat bentrok);
+// tanpa proyek → IndexedDB browser. Koordinat global (WGS84) dikonversi ke koordinat model lewat kalibrasi lapangan,
+// IfcMapConversion (UTM WGS84 / TM-3 DGN95), atau RefLatitude/RefLongitude IfcSite.
+const INSP_STATUS = { open: "Terbuka", need: "Perlu respon", answered: "Sudah direspon", closed: "Selesai" };
+const INSP_CAT = { mutu: "Mutu / kualitas", k3: "K3 (keselamatan)", progres: "Progres", desain: "Desain / gambar", material: "Material", lain: "Lainnya" };
+const INSP_PRIO = { low: "Rendah", mid: "Sedang", high: "Tinggi", crit: "Kritis" };
+const INSP_DIR = "03_Issues", GEO_FILE = "inspeksi-georef.json"; // file (bukan folder) di folder issue — tim dengan izin komentar bisa menulis
+const inspUid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+state.insp = { list: [], filter: { status: "all", cat: "all", mine: false, q: "", from: "", to: "" }, show: true, active: null, draft: null, pick: false, geo: null, etags: new Map(), hashes: new Map() };
+// ---------- penyimpanan lokal (IndexedDB) ----------
+const InspDB = { db: null, open() { return new Promise((res, rej) => { if (this.db) return res(this.db); const r = indexedDB.open("kolab-insp", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onsuccess = () => { this.db = r.result; res(this.db); }; r.onerror = () => rej(r.error); }); },
+  async get(k) { const db = await this.open(); return new Promise((res, rej) => { const q = db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
+  async set(k, v) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); } };
+const inspLocalKey = () => "local";
+async function inspLoadLocal() { try { const d = await InspDB.get(inspLocalKey()); state.insp.list = (d && d.list) || []; state.insp.geo = (d && d.geo) || null; } catch { state.insp.list = []; } inspRender(); rebuildLabels(); }
+let inspSaveT = null;
+function inspSaveSoon() { clearTimeout(inspSaveT); inspSaveT = setTimeout(inspSave, 500); }
+async function inspSave() {
+  const I = state.insp;
+  if (!state.project) { try { await InspDB.set(inspLocalKey(), { list: I.list, geo: I.geo }); } catch (e) { toast("Inspeksi tidak tersimpan di browser: " + e.message, "error"); } return; }
+  const P = state.project;
+  try {
+    for (const it of I.list) {
+      const h = JSON.stringify(it); if (I.hashes.get(it.guid) === h) continue;
+      const path = INSP_DIR + "/inspeksi-" + it.guid + ".json";
+      for (let k = 0; k < 4; k++) {
+        try { const etag = I.etags.get(it.guid); const r = await P.store.write(path, JSON.stringify({ format: "kolab-inspeksi", version: 1, item: it }), etag ? { etag, type: "application/json" } : { create: true, type: "application/json" }); I.etags.set(it.guid, r.etag); I.hashes.set(it.guid, JSON.stringify(it)); break; }
+        catch (e) { if (e.code !== "conflict") throw e; const rem = await P.store.read(path, "text").catch(() => null); if (rem) { inspMerge(it, JSON.parse(rem.data).item); I.etags.set(it.guid, rem.etag); } else I.etags.delete(it.guid); }
+      }
+    }
+    if (I.geoDirty) { await P.store.write(INSP_DIR + "/" + GEO_FILE, JSON.stringify(I.geo || {}), { type: "application/json" }); I.geoDirty = false; }
+  } catch (e) { console.error(e); toast("Inspeksi gagal disimpan ke proyek: " + (e.message || e), "error"); }
+}
+function inspMerge(local, remote) { // gabungkan dua salinan: thread & foto = gabungan; field = yang terbaru
+  if (!remote) return local;
+  const byId = (a, b) => { const m = new Map(); for (const x of [...(a || []), ...(b || [])]) m.set(x.id, x); return [...m.values()].sort((p, q) => String(p.ts).localeCompare(String(q.ts))); };
+  const newer = String(remote.updated) > String(local.updated) ? remote : local, thread = byId(local.thread, remote.thread), photos = byId(local.photos, remote.photos);
+  Object.assign(local, newer, { thread, photos });
+  return local;
+}
+async function inspLoadProject() {
+  const P = state.project, I = state.insp; if (!P) return;
+  I.list = []; I.etags = new Map(); I.hashes = new Map();
+  try {
+    const files = await P.store.list(INSP_DIR).catch((e) => { if (e.code === "notfound") return []; throw e; });
+    for (const f of files) {
+      if (f.dir || !/^inspeksi-.*\.json$/i.test(f.name)) continue;
+      const r = await P.store.read(INSP_DIR + "/" + f.name, "text").catch(() => null); if (!r) continue;
+      try { const j = JSON.parse(r.data); if (f.name === GEO_FILE) { I.geo = j && j.points ? j : null; continue; } const it = j.item; if (!it || !it.guid) continue; I.list.push(it); I.etags.set(it.guid, r.etag); I.hashes.set(it.guid, JSON.stringify(it)); } catch { /* lewati */ }
+    }
+    I.list.sort((a, b) => String(a.created).localeCompare(String(b.created)));
+  } catch (e) { toast("Inspeksi tidak bisa dimuat: " + (e.message || e), "error"); }
+  inspRender(); rebuildLabels();
+}
+{ const _pr = projectReloadIssues; projectReloadIssues = async function () { const r = await _pr.apply(this, arguments); await inspLoadProject(); return r; }; }
+{ const _cp = closeProject; closeProject = function () { const r = _cp.apply(this, arguments); if (!state.project) inspLoadLocal(); return r; }; }
+// ---------- koordinat: WGS84 → koordinat model ----------
+const DEG = Math.PI / 180, RE = 6378137;
+function tmForward(lat, lon, lon0, k0, fe, fn) { // Transverse Mercator (WGS84), Snyder
+  const a = 6378137, f = 1 / 298.257223563, e2 = f * (2 - f), ep2 = e2 / (1 - e2), phi = lat * DEG, lam = (lon - lon0) * DEG;
+  const N = a / Math.sqrt(1 - e2 * Math.sin(phi) ** 2), T = Math.tan(phi) ** 2, C = ep2 * Math.cos(phi) ** 2, A = Math.cos(phi) * lam;
+  const M = a * ((1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256) * phi - (3 * e2 / 8 + 3 * e2 ** 2 / 32 + 45 * e2 ** 3 / 1024) * Math.sin(2 * phi) + (15 * e2 ** 2 / 256 + 45 * e2 ** 3 / 1024) * Math.sin(4 * phi) - (35 * e2 ** 3 / 3072) * Math.sin(6 * phi));
+  const x = fe + k0 * N * (A + (1 - T + C) * A ** 3 / 6 + (5 - 18 * T + T * T + 72 * C - 58 * ep2) * A ** 5 / 120);
+  const y = fn + k0 * (M + N * Math.tan(phi) * (A * A / 2 + (5 - T + 9 * C + 4 * C * C) * A ** 4 / 24 + (61 - 58 * T + T * T + 600 * C - 330 * ep2) * A ** 6 / 720));
+  return [x, y];
+}
+function crsProject(name, lat, lon) { // EPSG:326zz/327zz (UTM WGS84), EPSG:23830–23845 (DGN95 / TM-3 Indonesia)
+  const m = /(\d{4,5})/.exec(String(name || "")); if (!m) return null; const c = +m[1];
+  if (c >= 32601 && c <= 32660) return tmForward(lat, lon, (c - 32600) * 6 - 183, 0.9996, 500000, 0);
+  if (c >= 32701 && c <= 32760) return tmForward(lat, lon, (c - 32700) * 6 - 183, 0.9996, 500000, 10000000);
+  if (c >= 23830 && c <= 23845) return tmForward(lat, lon, 94.5 + (c - 23830) * 3, 0.9999, 200000, 1500000);
+  return null;
+}
+function ifcGeoref() { // dari model pertama yang punya data georeferensi
+  for (const m of state.models) {
+    if (m._geo !== undefined) { if (m._geo) return m._geo; continue; }
+    m._geo = null; const t = m.text;
+    const stmt = (type) => { const re = new RegExp("#\\d+\\s*=\\s*" + type + "\\s*\\(", "i"), mm = re.exec(t); if (!mm) return null; let j = mm.index + mm[0].length - 1, inStr = false; for (let k = j; k < t.length; k++) { const ch = t.charCodeAt(k); if (ch === 39) inStr = !inStr; else if (ch === 59 && !inStr) { j = k; break; } } try { return Core.parseArgs(t.slice(mm.index + mm[0].length - 1, j)); } catch { return null; } };
+    const mc = stmt("IFCMAPCONVERSION"), crs = stmt("IFCPROJECTEDCRS");
+    if (mc && crs && typeof mc[2] === "number") { const a = typeof mc[5] === "number" ? mc[5] : 1, b = typeof mc[6] === "number" ? mc[6] : 0, n = Math.hypot(a, b) || 1;
+      m._geo = { kind: "map", crs: String(crs[0] || ""), e0: mc[2], n0: mc[3], h0: typeof mc[4] === "number" ? mc[4] : 0, a: a / n, b: b / n, s: typeof mc[7] === "number" ? mc[7] : 1, label: `IfcMapConversion · ${crs[0]}` }; return m._geo; }
+    const site = stmt("IFCSITE"), dms = (v) => (Array.isArray(v) && v.length >= 3 ? Math.sign(v[0] || v[1] || v[2] || 1) * (Math.abs(v[0]) + Math.abs(v[1]) / 60 + Math.abs(v[2]) / 3600 + Math.abs(v[3] || 0) / 3.6e9) : null);
+    if (site && dms(site[9]) != null && dms(site[10]) != null) { m._geo = { kind: "site", lat0: dms(site[9]), lon0: dms(site[10]), h0: typeof site[11] === "number" ? site[11] : 0, label: "IfcSite RefLatitude/RefLongitude" }; return m._geo; }
+  }
+  return null;
+}
+const enu = (lat, lon, lat0, lon0) => [(lon - lon0) * DEG * RE * Math.cos(lat0 * DEG), (lat - lat0) * DEG * RE];
+function geoToModel(gps, yHint) { // → [x,y,z] koordinat model (Y ke atas) atau null
+  if (!gps || gps.lat == null) return null;
+  const cal = state.insp.geo;
+  if (cal && cal.points && cal.points.length) { // kalibrasi lapangan: 1 titik = geser, 2 titik = geser + putar
+    const p1 = cal.points[0], [e, n] = enu(gps.lat, gps.lon, p1.lat, p1.lon); let rot = cal.rot || 0;
+    const x = p1.pt[0] + e * Math.cos(rot) - n * Math.sin(rot), z = p1.pt[2] - (e * Math.sin(rot) + n * Math.cos(rot));
+    return [x, yHint ?? p1.pt[1], z];
+  }
+  const g = ifcGeoref(); if (!g) return null;
+  let X, Y;
+  if (g.kind === "map") { const p = crsProject(g.crs, gps.lat, gps.lon); if (!p) return null; const dx = (p[0] - g.e0) / g.s, dy = (p[1] - g.n0) / g.s; X = dx * g.a + dy * g.b; Y = -dx * g.b + dy * g.a; }
+  else { [X, Y] = enu(gps.lat, gps.lon, g.lat0, g.lon0); }
+  return [X, yHint ?? 0, -Y]; // IFC (x, y-utara, z-atas) → model Y-atas
+}
+function inspPoint(it) { if (it.point) return it.point; const lv = it.levelY != null ? it.levelY : null; return geoToModel(it.gps, lv); }
+function geoSourceText() { const c = state.insp.geo; if (c && c.points && c.points.length) return `Kalibrasi lapangan (${c.points.length} titik${c.points.length > 1 ? ", termasuk arah utara" : ""})`; const g = ifcGeoref(); return g ? g.label : "Belum ada — lakukan kalibrasi agar titik GPS tampil di model"; }
+function recalcRot() { const c = state.insp.geo; if (!c || !c.points || c.points.length < 2) { if (c) c.rot = 0; return; } const [p1, p2] = c.points, [e, n] = enu(p2.lat, p2.lon, p1.lat, p1.lon);
+  const angG = Math.atan2(n, e), angM = Math.atan2(-(p2.pt[2] - p1.pt[2]), p2.pt[0] - p1.pt[0]); c.rot = angM - angG; }
+// ---------- GPS & foto ----------
+function getGps(timeoutMs = 12000) {
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error("Perangkat/browser tidak mendukung GPS"));
+    let best = null; const t0 = Date.now();
+    const id = navigator.geolocation.watchPosition((p) => { const c = p.coords; const g = { lat: c.latitude, lon: c.longitude, alt: c.altitude, acc: c.accuracy, ts: nowIso() };
+      if (!best || g.acc < best.acc) best = g; if (best.acc <= 8 || Date.now() - t0 > timeoutMs) { navigator.geolocation.clearWatch(id); res(best); } },
+    (e) => { navigator.geolocation.clearWatch(id); if (best) res(best); else rej(new Error(e.code === 1 ? "Izin lokasi ditolak — aktifkan izin lokasi untuk situs ini" : "Lokasi tidak didapat (" + e.message + ")")); }, { enableHighAccuracy: true, maximumAge: 0, timeout: timeoutMs });
+    setTimeout(() => { if (best) { navigator.geolocation.clearWatch(id); res(best); } }, timeoutMs + 500);
+  });
+}
+function compressPhoto(file, max = 1600, q = 0.72) {
+  return new Promise((res, rej) => { const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => { const s = Math.min(1, max / Math.max(img.width, img.height)), c = document.createElement("canvas"); c.width = Math.round(img.width * s); c.height = Math.round(img.height * s); c.getContext("2d").drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); res(c.toDataURL("image/jpeg", q)); };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("Foto tidak bisa dibaca")); }; img.src = url; });
+}
+async function filesToPhotos(files) { const out = []; for (const f of files) { if (!/^image\//.test(f.type)) continue; try { out.push({ id: inspUid(), data: await compressPhoto(f), cap: "", ts: nowIso(), by: reviewer() }); } catch (e) { toast(e.message, "error"); } } return out; }
+// ---------- filter & tampilan ----------
+const inspCanEdit = () => canDo("comment");
+const inspCanClose = (it) => canDo("closeIssue") || Collab.normEmail(it.author) === Collab.normEmail(reviewer());
+function inspFiltered() {
+  const f = state.insp.filter, q = f.q.trim().toLowerCase(), me = Collab.normEmail(reviewer());
+  return state.insp.list.filter((it) => !it.deleted && (f.status === "all" || it.status === f.status) && (f.cat === "all" || it.cat === f.cat) &&
+    (!f.mine || Collab.normEmail(it.assignee) === me || Collab.normEmail(it.author) === me) && (!f.from || String(it.created).slice(0, 10) >= f.from) && (!f.to || String(it.created).slice(0, 10) <= f.to) &&
+    (!q || [it.id, it.title, it.desc, it.level, it.assignee, it.author].join(" ").toLowerCase().includes(q)));
+}
+function inspNextId() { const max = state.insp.list.reduce((m, it) => Math.max(m, parseInt(String(it.id).replace(/\D/g, ""), 10) || 0), 0); return "INS-" + String(max + 1).padStart(3, "0"); }
+const fmtGps = (g) => (g ? `${g.lat.toFixed(6)}, ${g.lon.toFixed(6)}${g.acc ? ` (±${Math.round(g.acc)} m)` : ""}` : "—");
+const mapsUrl = (g) => `https://www.google.com/maps?q=${g.lat},${g.lon}`;
+function inspRender() {
+  const box = $("panel-insp"); if (!box) return; const I = state.insp;
+  $("badge-insp").textContent = String(I.list.filter((x) => !x.deleted && x.status !== "closed").length || "");
+  if (I.draft) return inspRenderForm();
+  if (I.active) { const it = I.list.find((x) => x.id === I.active); if (it) return inspRenderDetail(it); I.active = null; }
+  const L = inspFiltered(), f = I.filter, cnt = (s) => I.list.filter((x) => !x.deleted && x.status === s).length;
+  box.innerHTML = `<section class="sec"><div class="row between"><h2>Inspeksi lapangan</h2>${inspCanEdit() ? `<button class="btn primary sm" type="button" data-ia="new">+ Inspeksi baru</button>` : ""}</div>
+    <p class="hint">Tinjau langsung di lapangan: ambil foto, catat temuan, minta respon pihak terkait. Lokasi GPS tersimpan otomatis dan ditampilkan sebagai titik di model.</p>
+    <div class="seg wide" role="group" aria-label="Saring status">${[["all", "Semua"], ...Object.entries(INSP_STATUS)].map(([k, v]) => `<button type="button" data-if="${k}" aria-pressed="${f.status === k}">${v}${k !== "all" ? ` <b>${cnt(k)}</b>` : ""}</button>`).join("")}</div>
+    <div class="grid2"><label class="field">Kategori<select id="if-cat"><option value="all">Semua</option>${Object.entries(INSP_CAT).map(([k, v]) => `<option value="${k}"${f.cat === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+    <label class="field">Cari<input type="text" id="if-q" value="${esc(f.q)}" placeholder="judul, lokasi, nama…"></label>
+    <label class="field">Dari tanggal<input type="date" id="if-from" value="${esc(f.from)}"></label><label class="field">Sampai<input type="date" id="if-to" value="${esc(f.to)}"></label></div>
+    <label class="check"><input type="checkbox" id="if-mine"${f.mine ? " checked" : ""}> <span>Hanya yang saya buat / ditugaskan ke saya</span></label>
+    <label class="check"><input type="checkbox" id="if-show"${I.show ? " checked" : ""}> <span>Tampilkan titik inspeksi di model</span></label></section>
+    <ul class="cards">${L.length ? L.slice().reverse().map((it) => `<li class="card insp-card" data-iopen="${esc(it.id)}"><div class="row between"><b class="mono">${esc(it.id)}</b><span class="pill ip-${it.status}">${INSP_STATUS[it.status]}</span></div>
+      <div class="ttl">${esc(it.title || "(tanpa judul)")}</div><div class="hint">${esc(INSP_CAT[it.cat] || "")} · ${esc(INSP_PRIO[it.prio] || "")} · ${fmtStamp(it.created)} · ${esc(it.author || "")}${it.assignee ? ` → ${esc(it.assignee)}` : ""}</div>
+      <div class="hint">${it.photos && it.photos.length ? `📷 ${it.photos.length} · ` : ""}${it.gps ? "📍 GPS" : it.point ? "📍 titik model" : "tanpa lokasi"}${inspPoint(it) ? "" : it.gps ? " (belum tampil di model)" : ""} · 💬 ${(it.thread || []).filter((t) => t.kind !== "status").length}${it.due ? ` · tenggat ${esc(it.due)}` : ""}</div></li>`).join("") : `<li class="hint" style="padding:12px 16px">Belum ada inspeksi${f.status !== "all" || f.cat !== "all" || f.q || f.mine || f.from || f.to ? " yang cocok dengan filter" : ""}.</li>`}</ul>
+    <section class="sec"><h2>Laporan & ekspor</h2><div class="row"><button class="btn sm" type="button" data-ia="report">📄 Buat laporan (sesuai filter)</button><button class="btn sm" type="button" data-ia="csv">Ekspor CSV</button><button class="btn sm" type="button" data-ia="export">Simpan file</button><button class="btn sm" type="button" data-ia="import">Buka file</button></div>
+      <input type="file" id="in-insp" accept=".json" hidden><p class="hint">${state.project ? "Tersimpan otomatis di folder proyek <span class=\"mono\">03_Issues</span> dan terlihat oleh seluruh anggota tim." : "Tanpa proyek bersama, inspeksi tersimpan di browser ini. Pakai “Simpan file” untuk berbagi atau cadangan."}</p></section>
+    <section class="sec"><h2>Georeferensi (GPS → model)</h2><p class="hint">Sumber: <b>${esc(geoSourceText())}</b></p>
+      <p class="hint">Kalibrasi lapangan: berdiri di titik yang mudah dikenali (mis. sudut kolom), klik titik itu di model, lalu ambil GPS. Titik kedua yang berjauhan menentukan arah utara.</p>
+      <div class="row"><button class="btn sm" type="button" data-ia="cal">📍 Tambah titik kalibrasi</button>${I.geo && I.geo.points && I.geo.points.length ? `<button class="btn sm" type="button" data-ia="calclear">Hapus kalibrasi</button>` : ""}</div>
+      ${I.geo && I.geo.points ? `<ul class="hint">${I.geo.points.map((p, k) => `<li>Titik ${k + 1}: ${fmtGps(p)} → model (${p.pt.map((v) => v.toFixed(2)).join(", ")})</li>`).join("")}</ul>` : ""}${I.pick ? `<p class="hint warn">Klik sebuah titik di model…</p>` : ""}</section>`;
+}
+function inspReadForm() { const d = state.insp.draft; if (!d || !$("id-title")) return; d.title = $("id-title").value.trim(); d.cat = $("id-cat").value; d.prio = $("id-prio").value; d.level = $("id-level").value.trim(); d.desc = $("id-desc").value; d.assignee = $("id-assignee").value.trim(); d.due = $("id-due").value; d.status = $("id-need").checked ? (d.status === "answered" ? "answered" : "need") : d.status === "need" ? "open" : d.status || "open"; for (const i of document.querySelectorAll("[data-pcap]")) { const p = d.photos.find((x) => x.id === i.dataset.pcap); if (p) p.cap = i.value; } }
+function inspRenderForm() {
+  inspReadForm();
+  const box = $("panel-insp"), d = state.insp.draft;
+  box.innerHTML = `<section class="sec"><div class="row between"><h2>${d.id ? "Ubah inspeksi " + esc(d.id) : "Inspeksi baru"}</h2><button class="btn sm" type="button" data-ia="cancel">Batal</button></div>
+    <label class="field">Judul temuan<input type="text" id="id-title" value="${esc(d.title || "")}" placeholder="mis. Retak rambut pada kolom K2"></label>
+    <div class="grid2"><label class="field">Kategori<select id="id-cat">${Object.entries(INSP_CAT).map(([k, v]) => `<option value="${k}"${d.cat === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+    <label class="field">Prioritas<select id="id-prio">${Object.entries(INSP_PRIO).map(([k, v]) => `<option value="${k}"${d.prio === k ? " selected" : ""}>${v}</option>`).join("")}</select></label></div>
+    <label class="field">Lokasi / lantai / area<input type="text" id="id-level" value="${esc(d.level || "")}" placeholder="mis. Lantai 2, as B-3"></label>
+    <label class="field">Uraian<textarea id="id-desc" rows="4" placeholder="Apa yang ditemukan, ukuran, penyebab dugaan…">${esc(d.desc || "")}</textarea></label>
+    <label class="check"><input type="checkbox" id="id-need"${d.status === "need" ? " checked" : ""}> <span><b>Perlu respon</b> dari pihak terkait</span></label>
+    <div class="grid2"><label class="field">Ditujukan ke (email/nama)<input type="text" id="id-assignee" list="member-list" value="${esc(d.assignee || "")}"></label><label class="field">Tenggat respon<input type="date" id="id-due" value="${esc(d.due || "")}"></label></div>
+    <h3 class="sub">Foto (${(d.photos || []).length})</h3><div class="insp-photos">${(d.photos || []).map((p) => `<figure><img src="${p.data}" alt=""><input type="text" data-pcap="${p.id}" value="${esc(p.cap)}" placeholder="keterangan"><button class="btn link" type="button" data-pdel="${p.id}">hapus</button></figure>`).join("")}</div>
+    <div class="row"><button class="btn sm" type="button" data-ia="cam">📷 Ambil foto</button><button class="btn sm" type="button" data-ia="gal">🖼 Pilih dari galeri</button></div>
+    <input type="file" id="in-cam" accept="image/*" capture="environment" hidden><input type="file" id="in-gal" accept="image/*" multiple hidden>
+    <h3 class="sub">Lokasi</h3><p class="hint">GPS: <b>${d.gps ? fmtGps(d.gps) : d.gpsBusy ? "mencari sinyal…" : "belum diambil"}</b>${d.gps ? ` · <a href="${mapsUrl(d.gps)}" target="_blank" rel="noopener">lihat peta</a>` : ""}<br>Titik di model: <b>${d.point ? d.point.map((v) => v.toFixed(2)).join(", ") : geoToModel(d.gps) ? "dari GPS (otomatis)" : "—"}</b>${d.element ? `<br>Elemen: ${esc(d.element.name || d.element.gid)}` : ""}</p>
+    <div class="row"><button class="btn sm" type="button" data-ia="gps">📍 Ambil GPS</button><button class="btn sm" type="button" data-ia="pickpt">🎯 Pilih titik di model${state.insp.pick ? " (klik di model…)" : ""}</button>${d.point ? `<button class="btn sm" type="button" data-ia="clearpt">Hapus titik model</button>` : ""}</div>
+    <div class="row" style="margin-top:10px"><button class="btn primary" type="button" data-ia="save">Simpan inspeksi</button></div></section>`;
+}
+function inspRenderDetail(it) {
+  const box = $("panel-insp"), canC = inspCanClose(it), me = Collab.normEmail(reviewer()), isAssignee = it.assignee && Collab.normEmail(it.assignee) === me;
+  box.innerHTML = `<section class="sec"><div class="row between"><button class="btn sm" type="button" data-ia="back">← Daftar</button><span class="pill ip-${it.status}">${INSP_STATUS[it.status]}</span></div>
+    <h2 style="margin-top:8px"><span class="mono">${esc(it.id)}</span> ${esc(it.title || "")}</h2>
+    <p class="hint">${esc(INSP_CAT[it.cat] || "")} · prioritas ${esc(INSP_PRIO[it.prio] || "")} · dibuat ${fmtStamp(it.created)} oleh ${esc(it.author || "")}${it.assignee ? `<br>Ditujukan ke <b>${esc(it.assignee)}</b>${it.due ? ` · tenggat <b>${esc(it.due)}</b>${it.status !== "closed" && it.due < todayIso() ? ' <span class="err">(lewat)</span>' : ""}` : ""}` : ""}</p>
+    ${it.level ? `<p><b>Lokasi:</b> ${esc(it.level)}</p>` : ""}${it.desc ? `<p style="white-space:pre-wrap">${esc(it.desc)}</p>` : ""}
+    <div class="insp-photos">${(it.photos || []).map((p) => `<figure><a href="${p.data}" target="_blank" rel="noopener"><img src="${p.data}" alt="${esc(p.cap)}"></a>${p.cap ? `<figcaption>${esc(p.cap)}</figcaption>` : ""}</figure>`).join("")}</div>
+    <p class="hint">📍 ${it.gps ? `${fmtGps(it.gps)} · <a href="${mapsUrl(it.gps)}" target="_blank" rel="noopener">peta</a>` : "tanpa GPS"}${inspPoint(it) ? ` · <button class="btn link" type="button" data-ia="fly">lihat di model</button>` : ""}</p>
+    <div class="row">${inspCanEdit() && (canC || Collab.normEmail(it.author) === me) ? `<button class="btn sm" type="button" data-ia="edit">Ubah</button>` : ""}
+      ${it.status !== "closed" && canC ? `<button class="btn sm" type="button" data-ia="close">✔ Tandai selesai</button>` : ""}${it.status === "closed" && canC ? `<button class="btn sm" type="button" data-ia="reopen">Buka lagi</button>` : ""}
+      ${it.status === "open" && inspCanEdit() ? `<button class="btn sm" type="button" data-ia="askresp">Minta respon</button>` : ""}<button class="btn sm" type="button" data-ia="report1">📄 Laporan</button>
+      ${canDo("closeIssue") ? `<button class="btn sm" type="button" data-ia="del" style="color:var(--late)">Hapus</button>` : ""}</div></section>
+    <section class="sec"><h2>Tanggapan</h2><ol class="thread">${(it.thread || []).map((t) => `<li class="${t.kind}"><div class="hint">${esc(t.author)} · ${fmtStamp(t.ts)}${t.kind === "response" ? " · <b>RESPON</b>" : ""}</div>${t.text ? `<div style="white-space:pre-wrap">${esc(t.text)}</div>` : ""}${(t.photos || []).length ? `<div class="insp-photos">${t.photos.map((p) => `<figure><a href="${p.data}" target="_blank" rel="noopener"><img src="${p.data}" alt=""></a></figure>`).join("")}</div>` : ""}</li>`).join("") || '<li class="hint">Belum ada tanggapan.</li>'}</ol>
+    ${inspCanEdit() ? `<label class="field">Tulis tanggapan<textarea id="it-text" rows="3"></textarea></label><div class="insp-photos" id="it-photos">${(state.insp.replyPhotos || []).map((p) => `<figure><img src="${p.data}" alt=""></figure>`).join("")}</div>
+      <div class="row"><button class="btn sm" type="button" data-ia="rcam">📷 Foto</button><button class="btn sm" type="button" data-ia="comment">Kirim komentar</button>${it.status === "need" || isAssignee ? `<button class="btn primary sm" type="button" data-ia="respond">Kirim sebagai respon</button>` : ""}</div><input type="file" id="in-rcam" accept="image/*" capture="environment" multiple hidden>` : ""}</section>`;
+}
+function inspTouch(it, kind, text, extra) { it.updated = nowIso(); if (kind) (it.thread = it.thread || []).push(Object.assign({ id: inspUid(), author: reviewer(), ts: it.updated, text: text || "", kind }, extra || {})); inspSaveSoon(); inspRender(); rebuildLabels(); }
+// ---------- laporan ----------
+function inspReportHtml(list, title) {
+  const proj = (state.project && state.project.name) || "Proyek", by = reviewer(), cnt = (s) => list.filter((x) => x.status === s).length, f = state.insp.filter;
+  const css = `body{font:13px/1.45 system-ui,Segoe UI,Arial;color:#141922;margin:24px}h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:22px 0 6px;border-bottom:2px solid #141922;padding-bottom:3px;page-break-after:avoid}table{border-collapse:collapse;width:100%;margin:6px 0}td,th{border:1px solid #b9c2cb;padding:4px 6px;text-align:left;vertical-align:top}th{background:#eef1f4}.meta td:first-child{width:150px;color:#555}.ph{display:flex;flex-wrap:wrap;gap:8px}.ph figure{margin:0;width:31%}.ph img{width:100%;border:1px solid #ccc}.ph figcaption{font-size:11px;color:#555}.it{page-break-inside:avoid;margin-bottom:18px}.st{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#fff;background:#666}.st.open{background:#c0392b}.st.need{background:#d68910}.st.answered{background:#2471a3}.st.closed{background:#1e8449}.th{margin:4px 0;padding:4px 8px;border-left:3px solid #ccc}.th.response{border-color:#2471a3;background:#f1f6fb}.sign{display:flex;gap:40px;margin-top:40px}.sign div{flex:1;border-top:1px solid #000;padding-top:4px;text-align:center}@media print{body{margin:10mm}button{display:none}}`;
+  const row = (it) => `<tr><td>${esc(it.id)}</td><td>${esc(it.title)}</td><td>${esc(INSP_CAT[it.cat] || "")}</td><td>${esc(INSP_PRIO[it.prio] || "")}</td><td><span class="st ${it.status}">${INSP_STATUS[it.status]}</span></td><td>${esc(it.assignee || "")}</td><td>${fmtStamp(it.created)}</td></tr>`;
+  const det = (it) => { const pt = inspPoint(it); return `<div class="it"><h2>${esc(it.id)} — ${esc(it.title || "")}</h2><table class="meta"><tr><td>Status</td><td><span class="st ${it.status}">${INSP_STATUS[it.status]}</span></td></tr><tr><td>Kategori / prioritas</td><td>${esc(INSP_CAT[it.cat] || "")} / ${esc(INSP_PRIO[it.prio] || "")}</td></tr>
+    <tr><td>Dibuat</td><td>${fmtStamp(it.created)} oleh ${esc(it.author || "")}</td></tr>${it.assignee ? `<tr><td>Ditujukan ke</td><td>${esc(it.assignee)}${it.due ? ` · tenggat ${esc(it.due)}` : ""}</td></tr>` : ""}${it.level ? `<tr><td>Lokasi</td><td>${esc(it.level)}</td></tr>` : ""}
+    <tr><td>Koordinat GPS</td><td>${it.gps ? `${fmtGps(it.gps)}${it.gps.alt != null ? ` · alt ${it.gps.alt.toFixed(1)} m` : ""} · <a href="${mapsUrl(it.gps)}">peta</a>` : "—"}</td></tr><tr><td>Koordinat model</td><td>${pt ? `X ${pt[0].toFixed(2)} · Y ${(-pt[2]).toFixed(2)} · Z ${pt[1].toFixed(2)} m` : "—"}</td></tr>${it.element ? `<tr><td>Elemen</td><td>${esc(it.element.name || "")} <span style="color:#777">${esc(it.element.gid || "")}</span></td></tr>` : ""}</table>
+    ${it.desc ? `<p style="white-space:pre-wrap">${esc(it.desc)}</p>` : ""}${(it.photos || []).length ? `<div class="ph">${it.photos.map((p) => `<figure><img src="${p.data}">${p.cap ? `<figcaption>${esc(p.cap)}</figcaption>` : ""}</figure>`).join("")}</div>` : ""}
+    ${(it.thread || []).length ? `<h3 style="font-size:13px;margin:10px 0 4px">Tanggapan</h3>${it.thread.map((t) => `<div class="th ${t.kind}"><small>${esc(t.author)} · ${fmtStamp(t.ts)}${t.kind === "response" ? " · <b>RESPON</b>" : t.kind === "status" ? " · status" : ""}</small><div style="white-space:pre-wrap">${esc(t.text)}</div>${(t.photos || []).length ? `<div class="ph">${t.photos.map((p) => `<figure><img src="${p.data}"></figure>`).join("")}</div>` : ""}</div>`).join("")}` : ""}</div>`; };
+  return `<!doctype html><html lang="id"><head><meta charset="utf-8"><title>${esc(title)}</title><style>${css}</style></head><body><button onclick="print()" style="float:right;padding:6px 14px">Cetak / Simpan PDF</button>
+  <h1>${esc(title)}</h1><div>${esc(proj)} · dibuat ${fmtStamp(nowIso())} oleh ${esc(by)}</div>${f.from || f.to ? `<div>Periode: ${esc(f.from || "…")} s/d ${esc(f.to || "…")}</div>` : ""}
+  <h2>Ringkasan</h2><table><tr><th>Total</th>${Object.values(INSP_STATUS).map((s) => `<th>${s}</th>`).join("")}</tr><tr><td>${list.length}</td>${Object.keys(INSP_STATUS).map((k) => `<td>${cnt(k)}</td>`).join("")}</tr></table>
+  <table><tr><th>ID</th><th>Judul</th><th>Kategori</th><th>Prioritas</th><th>Status</th><th>Ditujukan ke</th><th>Dibuat</th></tr>${list.map(row).join("")}</table>
+  ${list.map(det).join("")}<div class="sign"><div>Pemeriksa</div><div>Kontraktor</div><div>Pengawas / MK</div></div></body></html>`;
+}
+function inspOpenReport(list, title) {
+  const html = inspReportHtml(list, title), url = URL.createObjectURL(new Blob([html], { type: "text/html" })), w = window.open(url, "_blank");
+  if (!w) download(`Laporan-Inspeksi_${stamp()}.html`, html, "text/html");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+function inspCsv() { const rows = inspFiltered().map((it) => { const pt = inspPoint(it); return [it.id, it.title, INSP_CAT[it.cat] || "", INSP_PRIO[it.prio] || "", INSP_STATUS[it.status], it.level || "", it.author, fmtStamp(it.created), it.assignee || "", it.due || "", it.gps ? it.gps.lat.toFixed(7) : "", it.gps ? it.gps.lon.toFixed(7) : "", it.gps && it.gps.acc ? Math.round(it.gps.acc) : "", pt ? pt[0].toFixed(3) : "", pt ? (-pt[2]).toFixed(3) : "", pt ? pt[1].toFixed(3) : "", (it.photos || []).length, it.desc || "", (it.thread || []).filter((t) => t.kind !== "status").map((t) => `${t.author}: ${t.text}`).join(" | ")]; });
+  download(`inspeksi-${stamp()}.csv`, Core.toCsv(["ID", "Judul", "Kategori", "Prioritas", "Status", "Lokasi", "Dibuat oleh", "Dibuat", "Ditujukan ke", "Tenggat", "Lintang", "Bujur", "Akurasi (m)", "X model", "Y model", "Z model", "Jumlah foto", "Uraian", "Tanggapan"], rows), "text/csv"); }
+// ---------- titik di model ----------
+{ const _rl = rebuildLabels; rebuildLabels = function () { _rl.apply(this, arguments); const I = state.insp; if (!I || !I.show || !state.models.length) return;
+  for (const it of inspFiltered()) { const p = inspPoint(it); if (!p) continue; const el = document.createElement("button"); el.type = "button"; el.className = `pin insp ip-${it.status}${I.active === it.id ? " active" : ""}`; el.dataset.insp = it.id; el.title = `${it.id} ${it.title || ""} — ${INSP_STATUS[it.status]}`; el.textContent = "◉ " + it.id; addLabel(el, toScene(p)); }
+  const d = I.draft; if (d) { const p = d.point || geoToModel(d.gps); if (p) { const el = document.createElement("div"); el.className = "pin insp draft active"; el.textContent = "◉ Baru"; addLabel(el, toScene(p)); } }
+  updateLabels(); }; }
+$("labels").addEventListener("click", (ev) => { const b = ev.target.closest("[data-insp]"); if (!b) return; ev.stopPropagation(); state.insp.active = b.dataset.insp; state.insp.draft = null; setTab("insp"); inspRender(); rebuildLabels(); inspFly(state.insp.list.find((x) => x.id === b.dataset.insp), false); });
+function inspFly(it, move = true) { if (!it) return; const p = inspPoint(it); if (p && move) focusPoint(toScene(p), 3); if (it.element) { const r = findRef(it.element); if (r) { state.selected = { uid: r.m.uid, eid: r.eid }; applyVisuals(); } } }
+// pilih titik di model (form / kalibrasi)
+{ const _sa = selectAt; selectAt = function (ev) { const I = state.insp; if (!I.pick) return _sa.apply(this, arguments);
+  const hit = pick(ev); if (!hit) { toast("Klik pada permukaan elemen model."); return; }
+  const pt = toModel(hit.point), m = state.models.find((x) => x.uid === hit.uid), e = m && m.elements.get(hit.eid);
+  const ref = e ? refOf(m, hit.eid, e) : null;
+  if (I.pick === "draft" && I.draft) { I.draft.point = pt; if (ref) I.draft.element = ref; }
+  else if (I.pick === "cal") { I.calPending = { pt }; toast("Titik model dipilih. Sekarang ambil GPS di lokasi titik tersebut…"); inspCalGps(); }
+  I.pick = false; inspRender(); rebuildLabels(); }; }
+async function inspCalGps() { const I = state.insp; try { const g = await getGps(); if (!I.calPending) return; I.geo = I.geo && I.geo.points ? I.geo : { points: [] }; if (I.geo.points.length >= 2) I.geo.points.shift(); I.geo.points.push({ ...g, pt: I.calPending.pt }); I.calPending = null; recalcRot(); I.geoDirty = true; inspSaveSoon(); toast(`Titik kalibrasi ${I.geo.points.length} tersimpan (akurasi ±${Math.round(g.acc)} m).`); } catch (e) { toast(e.message, "error"); I.calPending = null; } inspRender(); rebuildLabels(); }
+// ---------- aksi ----------
+async function inspAction(a, el) {
+  const I = state.insp, it = I.list.find((x) => x.id === I.active), d = I.draft;
+  const readForm = inspReadForm;
+  if (a === "new") { I.draft = { cat: "mutu", prio: "mid", status: "open", photos: [], gps: null, element: state.selected ? hitRef(state.selected) : null }; I.active = null; inspRender(); inspDraftGps(); return; }
+  if (a === "cancel") { I.draft = null; I.pick = false; inspRender(); rebuildLabels(); return; }
+  if (a === "cam" || a === "gal") { readForm(); $(a === "cam" ? "in-cam" : "in-gal").click(); return; }
+  if (a === "gps") { readForm(); return inspDraftGps(); }
+  if (a === "pickpt") { readForm(); I.pick = "draft"; setTool("select"); inspRender(); toast("Klik titik lokasi temuan di model."); return; }
+  if (a === "clearpt") { readForm(); d.point = null; d.element = null; inspRender(); rebuildLabels(); return; }
+  if (a === "save") { readForm(); if (!d.title) { toast("Isi judul temuan dulu.", "error"); return; }
+    if (d.id) { const cur = I.list.find((x) => x.id === d.id); Object.assign(cur, d); inspTouch(cur, "status", "Data inspeksi diubah"); I.active = cur.id; }
+    else { const nw = Object.assign({ id: inspNextId(), guid: inspUid(), author: reviewer(), created: nowIso(), thread: [] }, d); if (nw.status === "need" && !nw.assignee) toast("Tip: isi “Ditujukan ke” agar jelas siapa yang harus merespon."); I.list.push(nw); inspTouch(nw, "status", "Inspeksi dibuat" + (nw.status === "need" ? " — perlu respon" : "")); I.active = nw.id; }
+    I.draft = null; inspRender(); rebuildLabels(); return; }
+  if (a === "back") { I.active = null; I.replyPhotos = []; inspRender(); rebuildLabels(); return; }
+  if (a === "report") return inspOpenReport(inspFiltered(), "Laporan Inspeksi Lapangan");
+  if (a === "csv") return inspCsv();
+  if (a === "export") return download(`inspeksi-${stamp()}.kolabinspeksi.json`, JSON.stringify({ format: "kolab-inspeksi", version: 1, list: I.list, geo: I.geo }), "application/json");
+  if (a === "import") return $("in-insp").click();
+  if (a === "cal") { I.pick = "cal"; setTool("select"); inspRender(); toast("Klik titik acuan di model (mis. sudut kolom tempat Anda berdiri)."); return; }
+  if (a === "calclear") { I.geo = null; I.geoDirty = true; inspSaveSoon(); inspRender(); rebuildLabels(); return; }
+  if (!it) return;
+  if (a === "fly") return inspFly(it, true);
+  if (a === "edit") { I.draft = JSON.parse(JSON.stringify(it)); inspRender(); rebuildLabels(); return; }
+  if (a === "close") { it.status = "closed"; return inspTouch(it, "status", "Ditandai selesai"); }
+  if (a === "reopen") { it.status = "open"; return inspTouch(it, "status", "Dibuka lagi"); }
+  if (a === "askresp") { it.status = "need"; return inspTouch(it, "status", "Meminta respon" + (it.assignee ? " dari " + it.assignee : "")); }
+  if (a === "del") { if (!confirm(`Hapus inspeksi ${it.id}?`)) return; it.deleted = true; I.active = null; return inspTouch(it, "status", "Dihapus"); }
+  if (a === "report1") return inspOpenReport([it], "Laporan Inspeksi " + it.id);
+  if (a === "rcam") return $("in-rcam").click();
+  if (a === "comment" || a === "respond") { const text = $("it-text").value.trim(), photos = I.replyPhotos || []; if (!text && !photos.length) { toast("Tulis tanggapan atau lampirkan foto."); return; }
+    if (a === "respond") it.status = "answered"; I.replyPhotos = []; return inspTouch(it, a === "respond" ? "response" : "comment", text, photos.length ? { photos } : null); }
+}
+async function inspDraftGps() { const d = state.insp.draft; if (!d) return; d.gpsBusy = true; inspRender(); try { const g = await getGps(); if (state.insp.draft === d) { d.gps = g; } } catch (e) { toast(e.message, "error"); } d.gpsBusy = false; if (state.insp.draft === d) { inspRender(); rebuildLabels(); } }
+// ---------- UI: tab, urutan tab, CSS ----------
+(function inspUI() {
+  const css = document.createElement("style");
+  css.textContent = `.pin.insp{background:#7d3c98;border-radius:3px 12px 12px 12px}.pin.insp.ip-open{background:#c0392b}.pin.insp.ip-need{background:#d68910}.pin.insp.ip-answered{background:#2471a3}.pin.insp.ip-closed{background:#1e8449}.pin.insp.draft{background:var(--accent)}
+.pill.ip-open{background:#c0392b;color:#fff}.pill.ip-need{background:#d68910;color:#fff}.pill.ip-answered{background:#2471a3;color:#fff}.pill.ip-closed{background:#1e8449;color:#fff}
+#panel-insp .row.between{flex-wrap:wrap;gap:6px}#panel-insp .seg.wide{flex-wrap:wrap}#panel-insp .seg.wide button{padding:4px 8px;font-size:12px}#panel-insp .grid2 input,#panel-insp .grid2 select,#panel-insp .field input,#panel-insp .field textarea{min-width:0;width:100%;box-sizing:border-box}#panel-insp{overflow-x:hidden}nav.tabs [role=tab]{padding-left:8px;padding-right:8px}.insp-card{cursor:pointer}.insp-card .ttl{font-weight:600;margin:2px 0}.insp-photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;margin:6px 0}.insp-photos figure{margin:0;display:flex;flex-direction:column;gap:2px}.insp-photos img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:6px;border:1px solid var(--line)}
+.insp-photos figcaption{font-size:11px;color:var(--muted)}.insp-photos input{font-size:11px;padding:2px 4px;border:1px solid var(--line);border-radius:4px}ol.thread{list-style:none;padding:0;margin:0;display:grid;gap:8px}ol.thread li{border-left:3px solid var(--line);padding:4px 8px}ol.thread li.response{border-color:#2471a3;background:color-mix(in srgb,#2471a3 8%,transparent)}ol.thread li.status{opacity:.75;font-size:12px}`;
+  document.head.appendChild(css);
+  const nav = document.querySelector("nav.tabs"), tb = document.createElement("button");
+  tb.setAttribute("role", "tab"); tb.id = "tab-insp"; tb.type = "button"; tb.setAttribute("aria-controls", "panel-insp"); tb.setAttribute("aria-selected", "false"); tb.innerHTML = 'Inspeksi <span class="badge" id="badge-insp"></span>';
+  for (const k of ["review", "clash", "lean", "progress"]) nav.appendChild($("tab-" + k));
+  nav.appendChild(tb); nav.appendChild($("tab-team"));
+  const panel = document.createElement("div"); panel.setAttribute("role", "tabpanel"); panel.id = "panel-insp"; panel.setAttribute("aria-labelledby", "tab-insp"); panel.hidden = true; $("panel-team").before(panel);
+  tb.onclick = () => setTab("insp");
+  panel.addEventListener("click", (ev) => { const t = ev.target.closest("[data-ia],[data-if],[data-iopen],[data-pdel]"); if (!t) return;
+    if (t.dataset.ia) return inspAction(t.dataset.ia, t);
+    if (t.dataset.if) { state.insp.filter.status = t.dataset.if; inspRender(); rebuildLabels(); return; }
+    if (t.dataset.iopen) { state.insp.active = t.dataset.iopen; inspRender(); rebuildLabels(); inspFly(state.insp.list.find((x) => x.id === t.dataset.iopen), true); return; }
+    if (t.dataset.pdel && state.insp.draft) { state.insp.draft.photos = state.insp.draft.photos.filter((p) => p.id !== t.dataset.pdel); inspRender(); } });
+  panel.addEventListener("change", async (ev) => { const t = ev.target, I = state.insp, f = I.filter;
+    if (t.id === "in-cam" || t.id === "in-gal") { const ph = await filesToPhotos([...t.files]); if (I.draft) { I.draft.photos.push(...ph); if (!I.draft.gps && !I.draft.gpsBusy) inspDraftGps(); } t.value = ""; inspRender(); return; }
+    if (t.id === "in-rcam") { I.replyPhotos = [...(I.replyPhotos || []), ...(await filesToPhotos([...t.files]))]; const txt = $("it-text") ? $("it-text").value : ""; inspRender(); if ($("it-text")) $("it-text").value = txt; return; }
+    if (t.id === "in-insp") { const fl = t.files[0]; t.value = ""; if (!fl) return; try { const j = JSON.parse(await fl.text()); const add = (j.list || []).filter((x) => x && x.guid); let n = 0; for (const x of add) { const cur = I.list.find((y) => y.guid === x.guid); if (cur) inspMerge(cur, x); else { if (I.list.some((y) => y.id === x.id)) x.id = inspNextId(); I.list.push(x); n++; } } if (j.geo && !I.geo) { I.geo = j.geo; I.geoDirty = true; } inspSaveSoon(); toast(`${add.length} inspeksi dimuat (${n} baru).`); } catch (e) { toast("File inspeksi tidak bisa dibaca: " + e.message, "error"); } inspRender(); rebuildLabels(); return; }
+    if (t.id === "if-cat") f.cat = t.value; else if (t.id === "if-from") f.from = t.value; else if (t.id === "if-to") f.to = t.value; else if (t.id === "if-mine") f.mine = t.checked; else if (t.id === "if-show") I.show = t.checked; else return;
+    inspRender(); rebuildLabels(); });
+  panel.addEventListener("input", (ev) => { if (ev.target.id === "if-q") { state.insp.filter.q = ev.target.value; clearTimeout(inspRender.t); inspRender.t = setTimeout(() => { const pos = ev.target.selectionStart; inspRender(); rebuildLabels(); const q = $("if-q"); if (q) { q.focus(); q.setSelectionRange(pos, pos); } }, 300); } });
+  inspLoadLocal();
+})();
+{ const _st = setTab; setTab = function (t) { if (t === "insp") { state.tab = "insp"; for (const k of ["progress", "review", "clash", "lean", "team"]) { $("tab-" + k).setAttribute("aria-selected", "false"); $("panel-" + k).hidden = true; } $("tab-insp").setAttribute("aria-selected", "true"); $("panel-insp").hidden = false; inspRender(); rebuildLabels(); return; }
+  $("tab-insp").setAttribute("aria-selected", "false"); $("panel-insp").hidden = true; return _st.apply(this, arguments); }; }
+{ const _tk = tabKeys; for (const k of ["progress", "review", "clash", "lean", "team"]) { $("tab-" + k).removeEventListener("keydown", _tk); $("tab-" + k).addEventListener("keydown", (ev) => tabKeys(ev)); } $("tab-insp").addEventListener("keydown", (ev) => tabKeys(ev)); tabKeys = function (ev) { if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return; const order = ["review", "clash", "lean", "progress", "insp", "team"].filter((k) => !$("tab-" + k).hidden), i = order.indexOf(state.tab); const n = order[(i + (ev.key === "ArrowRight" ? 1 : order.length - 1)) % order.length]; setTab(n); $("tab-" + n).focus(); }; }
+Object.assign(window.__bpv || {}, { inspAction, geoToModel, inspPoint, crsProject, tmForward });
 
 // ---------- start ----------
 if (!window.__BPV_POPUP) {

@@ -1,0 +1,12 @@
+﻿ID;Activity ID;WBS;Nama Tugas;Durasi;Mulai;Selesai;Baseline Start;Baseline Finish;Bobot;% Selesai;Status;Predecessors
+1;A1000;1;Gedung Kantor 2 Lantai;;02/03/2026;31/07/2026;02/03/2026;31/07/2026;;;;
+2;A1100;1.1;Pekerjaan pondasi;;02/03/2026;04/04/2026;02/03/2026;04/04/2026;;;;
+3;A1110;1.1.1;Galian & pondasi telapak;15 hari;02/03/2026;18/03/2026;02/03/2026;18/03/2026;6;100%;Complete;
+4;A1120;1.1.2;Sloof & pelat lantai dasar;12 hari;19/03/2026;04/04/2026;19/03/2026;01/04/2026;5;100%;Complete;3
+5;A1200;1.2;Struktur lantai 1;;06/04/2026;16/05/2026;06/04/2026;09/05/2026;;;;
+6;A1210;1.2.1;Kolom lantai 1;10 hari;06/04/2026;17/04/2026;06/04/2026;17/04/2026;8;100%;Complete;4
+7;A1220;1.2.2;Balok & pelat lantai 2;20 hari;18/04/2026;16/05/2026;18/04/2026;09/05/2026;12;60%;In Progress;6
+8;A1300;1.3;Dinding & kusen;;18/05/2026;27/06/2026;11/05/2026;20/06/2026;;;;
+9;A1310;1.3.1;Pasangan dinding lantai 1;18 hari;18/05/2026;06/06/2026;11/05/2026;30/05/2026;7;0%;Not Started;7
+10;A1320;1.3.2;Kusen pintu & jendela lantai 1;12 hari;08/06/2026;27/06/2026;01/06/2026;20/06/2026;4;0%;Not Started;9SS+5
+11;A1400;1.4;Serah terima;0 hari;31/07/2026;31/07/2026;31/07/2026;31/07/2026;;0%;Not Started;10
