@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="id">
 <head>
-<script src="login-gate.js" data-app="Kolab"></script>
+<script src="login-gate.js" data-app="Kolab" data-privacy="https://litebim.octonaut.id/privacy.html"></script>
 <title>Kolab</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -10217,6 +10217,113 @@ async function inspDraftGps() { const d = state.insp.draft; if (!d) return; d.gp
   $("tab-insp").setAttribute("aria-selected", "false"); $("panel-insp").hidden = true; return _st.apply(this, arguments); }; }
 { const _tk = tabKeys; for (const k of ["progress", "review", "clash", "lean", "team"]) { $("tab-" + k).removeEventListener("keydown", _tk); $("tab-" + k).addEventListener("keydown", (ev) => tabKeys(ev)); } $("tab-insp").addEventListener("keydown", (ev) => tabKeys(ev)); tabKeys = function (ev) { if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return; const order = ["review", "clash", "lean", "progress", "insp", "team"].filter((k) => !$("tab-" + k).hidden), i = order.indexOf(state.tab); const n = order[(i + (ev.key === "ArrowRight" ? 1 : order.length - 1)) % order.length]; setTab(n); $("tab-" + n).focus(); }; }
 Object.assign(window.__bpv || {}, { inspAction, geoToModel, inspPoint, crsProject, tmForward });
+
+// ===================== Proyek pribadi di Google Drive pengguna (maks. 1 proyek per pengguna) + tombol Keluar =====================
+// Isi folder: semua file IFC, jadwal (CSV + Gantt), review/markup/clash, inspeksi, setelan, dan manifest kolab-project.json.
+// Izin drive.file: Kolab hanya bisa melihat file/folder yang dibuatnya sendiri di Drive pengguna.
+const KD = { folderId: null, name: "", last: null };
+try { Object.assign(KD, JSON.parse(localStorage.getItem("bpv.kdrive") || "{}")); } catch { /* - */ }
+const kdPersist = () => { try { localStorage.setItem("bpv.kdrive", JSON.stringify({ folderId: KD.folderId, name: KD.name, last: KD.last })); } catch { /* - */ } };
+const KD_API = "https://www.googleapis.com/drive/v3", KD_UP = "https://www.googleapis.com/upload/drive/v3";
+async function kdJson(url, opt) { return (await gsdFetch(url, opt)).json(); }
+async function kdFindProjects() {
+  const q = encodeURIComponent("mimeType='application/vnd.google-apps.folder' and trashed=false and appProperties has { key='kolab' and value='project' }");
+  return (await kdJson(`${KD_API}/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime%20desc&pageSize=20`)).files || [];
+}
+async function kdListFolder(id) { const q = encodeURIComponent(`'${id}' in parents and trashed=false`); return (await kdJson(`${KD_API}/files?q=${q}&fields=files(id,name,size,mimeType,modifiedTime)&pageSize=1000`)).files || []; }
+async function kdUpload(parent, name, data, type, existingId) { // unggah resumable (aman untuk IFC besar)
+  const meta = existingId ? { name } : { name, parents: [parent], mimeType: type };
+  const init = await gsdFetch(`${KD_UP}/files${existingId ? "/" + existingId : ""}?uploadType=resumable&fields=id`, { method: existingId ? "PATCH" : "POST", headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": type }, body: JSON.stringify(meta) });
+  const loc = init.headers.get("Location"); if (!loc) throw new Error("Google Drive tidak memberi alamat unggah");
+  const r = await fetch(loc, { method: "PUT", headers: { "Content-Type": type }, body: data instanceof Blob ? data : new Blob([data], { type }) });
+  if (!r.ok) throw new Error("Unggah " + name + " gagal (" + r.status + ")");
+  return (await r.json()).id;
+}
+function kdProgress(html) { showOverlay(`<div class="loading-row"><div class="spinner"></div><h3>Google Drive</h3></div><p>${html}</p>`); }
+async function kdSave() {
+  if (!state.models.length && !state.csv && !(state.gantt && state.gantt.tasks.length)) { toast("Belum ada model atau jadwal untuk disimpan."); return; }
+  try {
+    await gsdToken();
+    const existing = await kdFindProjects();
+    let folder = existing.find((f) => f.id === KD.folderId) || existing[0] || null;
+    const defName = (KD.name || (folder && folder.name) || (state.models[0] ? state.models[0].name.replace(/\.ifc$/i, "") : "Proyek Kolab")).replace(/^Kolab — /, "");
+    const name = prompt(folder ? `Batas: 1 proyek per pengguna.\nProyek Anda di Google Drive: “${folder.name}”.\nIsi proyek itu akan diperbarui dengan data yang sedang dibuka.\n\nNama proyek:` : "Simpan proyek ke Google Drive Anda (batas 1 proyek per pengguna).\n\nNama proyek:", defName);
+    if (name == null) return;
+    const fname = "Kolab — " + (name.trim() || defName);
+    kdProgress("Menyiapkan folder proyek…");
+    if (!folder) { const f = await kdJson(`${KD_API}/files?fields=id,name`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: fname, mimeType: "application/vnd.google-apps.folder", appProperties: { kolab: "project" } }) }); folder = f; }
+    else if (folder.name !== fname) await kdJson(`${KD_API}/files/${folder.id}?fields=id,name`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: fname }) });
+    for (const extra of existing.filter((f) => f.id !== folder.id)) await gsdFetch(`${KD_API}/files/${extra.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trashed: true }) }).catch(() => {}); // jaga tetap 1 proyek
+    const have = new Map((await kdListFolder(folder.id)).map((f) => [f.name, f.id]));
+    const files = [];
+    for (const m of state.models) files.push([m.name, m.text, "application/octet-stream"]);
+    if (state.csv && !(state.gantt && state.gantt.tasks.length && /Gantt/.test(state.csv.fileName || ""))) files.push(["jadwal.csv", Core.toCsv(state.csv.headers, state.csv.rows), "text/csv"]);
+    if (state.gantt && state.gantt.tasks.length) { const { holiSet, calc, _key, ...rest } = state.gantt; files.push(["jadwal.kolabgantt.json", JSON.stringify({ app: "kolab-gantt", version: 1, ...rest }), "application/json"]); }
+    files.push(["review.bpvreview.json", JSON.stringify(exportData()), "application/json"]);
+    if (state.insp) files.push(["inspeksi.kolabinspeksi.json", JSON.stringify({ format: "kolab-inspeksi", version: 1, list: state.insp.list, geo: state.insp.geo }), "application/json"]);
+    const manifest = { app: "kolab", version: 1, name: name.trim() || defName, saved: nowIso(), by: reviewer(), models: state.models.map((m) => m.name), settings: { propName: state.propName, cols: state.cols, dateOrder: state.dateOrder, finishText: state.finishText, inherit: state.inherit, linkKey: state.linkKey, evmCal: state.evmCal, statusDay: state.time.statusDay } };
+    files.push(["kolab-project.json", JSON.stringify(manifest, null, 1), "application/json"]);
+    for (let i = 0; i < files.length; i++) { const [n, d, t] = files[i]; kdProgress(`Mengunggah ${i + 1} dari ${files.length}: <span class="mono">${esc(n)}</span> (${(String(d).length / 1048576).toFixed(1)} MB)`); await kdUpload(folder.id, n, d, t, have.get(n)); }
+    const keep = new Set(files.map((f) => f[0]));
+    for (const [n, id] of have) if (/\.ifc$/i.test(n) && !keep.has(n)) await gsdFetch(`${KD_API}/files/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trashed: true }) }).catch(() => {});
+    KD.folderId = folder.id; KD.name = fname; KD.last = nowIso(); kdPersist(); hideOverlay(); kdRender();
+    toast(`Proyek tersimpan di Google Drive Anda: “${fname}” (${state.models.length} IFC).`);
+  } catch (e) { hideOverlay(); alert("Gagal menyimpan proyek ke Google Drive: " + e.message); }
+}
+async function kdOpen() {
+  try {
+    await gsdToken();
+    const L = await kdFindProjects(); if (!L.length) { alert("Belum ada proyek Kolab di Google Drive Anda. Buka file IFC, lalu klik “Simpan proyek ke Drive”."); return; }
+    const folder = L[0];
+    if ((state.models.length || state.csv) && !confirm(`Buka proyek “${folder.name}” dari Google Drive? Model & jadwal yang sedang dibuka akan diganti.`)) return;
+    kdProgress("Membaca isi proyek…");
+    const list = await kdListFolder(folder.id), get = async (f, as) => { const r = await gsdFetch(`${KD_API}/files/${f.id}?alt=media`); return as === "blob" ? r.blob() : r.text(); };
+    const man = list.find((f) => f.name === "kolab-project.json"), manifest = man ? JSON.parse(await get(man)) : {};
+    for (const m of state.models) disposeModel(m); state.models = []; state.offset = null; state.csv = null; state.schedule = null; state.selected = null;
+    const toLoad = [];
+    for (const f of list) if (/\.ifc$/i.test(f.name) || f.name === "jadwal.csv") { kdProgress(`Mengunduh <span class="mono">${esc(f.name)}</span>…`); toLoad.push(new File([await get(f, "blob")], f.name)); }
+    if (manifest.settings) { const st = manifest.settings; if (st.propName) state.propName = st.propName; if (st.finishText) state.finishText = st.finishText; state.inherit = !!st.inherit; if (st.linkKey) state.linkKey = st.linkKey; if (st.evmCal) state.evmCal = st.evmCal; if ($("prop-name")) $("prop-name").value = state.propName; }
+    const rev = list.find((f) => f.name === "review.bpvreview.json"); if (rev) state.review = sanitizeReview(JSON.parse(await get(rev)));
+    await handleFiles(toLoad);
+    if (manifest.settings && manifest.settings.cols && state.csv) { state.cols = manifest.settings.cols; fillColumnSelects(); rebuildSchedule(); recompute(); refresh(false); }
+    const gf = list.find((f) => f.name === "jadwal.kolabgantt.json");
+    if (gf) { const d = JSON.parse(await get(gf)); state.gantt = Object.assign(gsNew(), d, { _key: GS_KEY() }); state.gantt.holiSet = new Set((state.gantt.holidays || []).map(Core.isoToDay).filter((x) => x != null)); gsSave(); gsCalc(); if (state.gantt.auto !== false) gsApply(); if ($("gs") && !$("gs").hidden) gsRender(); }
+    const inf = list.find((f) => f.name === "inspeksi.kolabinspeksi.json");
+    if (inf) { const j = JSON.parse(await get(inf)); state.insp.list = j.list || []; state.insp.geo = j.geo || null; inspSaveSoon(); inspRender(); }
+    saveStore(); KD.folderId = folder.id; KD.name = folder.name; kdPersist(); hideOverlay(); refresh(true); rebuildLabels(); kdRender();
+    toast(`Proyek “${folder.name}” dibuka dari Google Drive.`);
+  } catch (e) { hideOverlay(); alert("Gagal membuka proyek dari Google Drive: " + e.message); }
+}
+function kdRender() { const b = $("btn-kproj"); if (b) b.title = KD.name ? `Proyek di Google Drive: ${KD.name}${KD.last ? " · disimpan " + fmtStamp(KD.last) : ""}` : "Simpan / buka proyek di Google Drive Anda"; }
+function appExit() {
+  if (!confirm("Keluar dari Kolab? Anda perlu masuk lagi dengan akun Gmail untuk memakai aplikasi.")) return;
+  try { stopPlay(); } catch { /* - */ }
+  if (state.project || state.session) signOut(); else closeProject(true);
+  try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (/^octo_login_/.test(k)) localStorage.removeItem(k); } } catch { /* - */ }
+  try { if (GSD.tok && window.google && google.accounts && google.accounts.oauth2) google.accounts.oauth2.revoke(GSD.tok, () => {}); } catch { /* - */ }
+  GSD.tok = null; location.reload();
+}
+(function kdUI() {
+  const bar = document.querySelector(".topbar"), after = $("btn-gantt");
+  const wrap = document.createElement("div"); wrap.className = "kd-wrap"; wrap.style.cssText = "position:relative;display:inline-flex;gap:6px";
+  wrap.innerHTML = `<button class="btn sm" id="btn-kproj" type="button" aria-haspopup="menu">☁ Proyek ▾</button><button class="btn sm" id="btn-exit" type="button" title="Keluar dari aplikasi">⎋ Keluar</button>
+  <div class="menu" id="kd-menu" role="menu" hidden style="position:absolute;top:100%;left:0;z-index:30;min-width:260px">
+    <button type="button" role="menuitem" data-kd="save">☁ Simpan proyek ke Google Drive</button><button type="button" role="menuitem" data-kd="open">☁ Buka proyek dari Google Drive</button>
+    <button type="button" role="menuitem" data-kd="addifc">＋ Tambah file IFC (bisa beberapa)</button><button type="button" role="menuitem" data-kd="savefile">💾 Simpan review/inspeksi ke file</button>
+    <div class="hint" style="padding:6px 12px;max-width:280px">Setiap pengguna maksimal <b>1 proyek</b> di Google Drive-nya. Menyimpan lagi akan memperbarui proyek yang sama.</div></div>`;
+  after.after(wrap); kdRender();
+  const menu = $("kd-menu"); $("btn-kproj").onclick = (ev) => { ev.stopPropagation(); menu.hidden = !menu.hidden; };
+  document.addEventListener("click", (ev) => { if (!ev.target.closest("#kd-menu, #btn-kproj")) menu.hidden = true; });
+  const inAdd = document.createElement("input"); inAdd.type = "file"; inAdd.accept = ".ifc"; inAdd.multiple = true; inAdd.hidden = true; document.body.appendChild(inAdd);
+  inAdd.onchange = async () => { const fs = [...inAdd.files]; inAdd.value = ""; if (fs.length) { await handleFiles(fs); toast(`${fs.length} file IFC ditambahkan (total ${state.models.length} model).`); } };
+  menu.addEventListener("click", (ev) => { const b = ev.target.closest("[data-kd]"); if (!b) return; menu.hidden = true;
+    if (b.dataset.kd === "save") { if (state.project) toast("Proyek bersama sudah tersimpan di folder tim. Yang disimpan ke Drive adalah salinan pribadi."); kdSave(); }
+    else if (b.dataset.kd === "open") kdOpen(); else if (b.dataset.kd === "addifc") inAdd.click(); else if (b.dataset.kd === "savefile") exportJson(); });
+  $("btn-exit").onclick = appExit;
+  // tombol tambah IFC juga di panel Progres
+  const lf = $("btn-ifc"); if (lf) { const a = document.createElement("button"); a.className = "btn"; a.type = "button"; a.textContent = "＋ Tambah IFC"; a.title = "Tambahkan file IFC lain (arsitektur, struktur, MEP, …) tanpa mengganti model yang sudah dimuat"; a.onclick = () => inAdd.click(); lf.after(a); }
+})();
+Object.assign(window.__bpv || {}, { kdSave, kdOpen, appExit });
 
 // ---------- start ----------
 if (!window.__BPV_POPUP) {
