@@ -9295,6 +9295,533 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !$("admin").hidden) closeAdmin();
 });
 
+// ===================== Penjadwal Gantt (MS Project sederhana) yang sinkron dengan geometri =====================
+// Data: state.gantt = { start, cal, holidays[], tasks:[{id,name,lvl,code,dur,cons,pred:[{id,type,lag}],pct,w,links:[{file,gid}],bs,bf}], active }
+// Hasil penjadwalan (CPM) diterjemahkan menjadi "CSV" internal → seluruh fitur Kolab (status finish, 4D, SPI/EVM, Rencana)
+// langsung memakainya. Elemen ditautkan ke tugas lewat GlobalId (klik di model) atau lewat properti WBS di IFC.
+const GS_KEY = () => "bpv.gantt.v1:" + (state.project ? "p:" + (state.project.name || "proyek") : "local");
+const GS_ROW = 26;
+const gsWeekday = (d) => (d + 4) % 7; // 0 = Minggu
+function gsIsWork(d) {
+  const g = state.gantt, wd = gsWeekday(d);
+  if (g.cal === "mf" && (wd === 0 || wd === 6)) return false;
+  if (g.cal === "ms" && wd === 0) return false;
+  return !(g.holiSet && g.holiSet.has(d));
+}
+function gsNextWork(d) { let k = 0; while (!gsIsWork(d) && k++ < 400) d++; return d; }
+function gsAddWork(d, n) { // geser n hari kerja (n bisa negatif); d dianggap hari kerja
+  let k = 0;
+  if (n > 0) { while (n > 0 && k++ < 20000) { d++; if (gsIsWork(d)) n--; } }
+  else if (n < 0) { while (n < 0 && k++ < 20000) { d--; if (gsIsWork(d)) n++; } }
+  return d;
+}
+function gsWorkBetween(a, b) { let n = 0; for (let d = a; d <= b; d++) if (gsIsWork(d)) n++; return n; }
+const gsId = () => Math.max(0, ...state.gantt.tasks.map((t) => t.id)) + 1;
+function gsNew() { return { start: Core.dayToIso(Core.todayDay()), cal: "ms", holidays: [], tasks: [], active: null, auto: true, zoom: 14, collapsed: [] }; }
+function gsLoad() {
+  const key = GS_KEY();
+  try { state.gantt = Object.assign(gsNew(), JSON.parse(localStorage.getItem(GS_KEY()) || "null") || {}); } catch { state.gantt = gsNew(); }
+  state.gantt.holiSet = new Set((state.gantt.holidays || []).map(Core.isoToDay).filter((x) => x != null));
+  state.gantt._key = key;
+}
+function gsSave() {
+  const g = state.gantt; if (!g) return;
+  try { const { holiSet, calc, _key, ...rest } = g; localStorage.setItem(g._key || GS_KEY(), JSON.stringify(rest)); } catch { /* penuh */ }
+}
+// ---------- hierarki & kode WBS ----------
+function gsChildren(i) { // indeks anak langsung dari tugas i
+  const T = state.gantt.tasks, out = [], L = T[i].lvl;
+  for (let k = i + 1; k < T.length && T[k].lvl > L; k++) if (T[k].lvl === L + 1) out.push(k);
+  return out;
+}
+const gsIsSummary = (i) => { const T = state.gantt.tasks; return i + 1 < T.length && T[i + 1].lvl > T[i].lvl; };
+function gsRecode() { // kode WBS otomatis 1, 1.1, 1.1.1 dari indentasi
+  const cnt = [];
+  for (const t of state.gantt.tasks) { cnt.length = t.lvl + 1; cnt[t.lvl] = (cnt[t.lvl] || 0) + 1; t.code = cnt.slice(0, t.lvl + 1).map((x) => x || 1).join("."); }
+}
+function gsNormalizeLevels() { const T = state.gantt.tasks; for (let i = 0; i < T.length; i++) T[i].lvl = Math.max(0, Math.min(T[i].lvl, i ? T[i - 1].lvl + 1 : 0)); }
+// ---------- penjadwalan (CPM: forward + backward pass, FS/SS/FF/SF + lag, kalender kerja) ----------
+function gsCalc() {
+  const g = state.gantt, T = g.tasks, n = T.length, pStart = gsNextWork(Core.isoToDay(g.start) ?? Core.todayDay());
+  const byId = new Map(T.map((t, i) => [t.id, i])), sum = T.map((_, i) => gsIsSummary(i));
+  const C = T.map(() => ({ es: null, ef: null, ls: null, lf: null, crit: false, err: "" }));
+  const leafPreds = (i) => (T[i].pred || []).filter((p) => byId.has(p.id) && p.id !== T[i].id);
+  // dependensi ke tugas induk dialihkan ke anak-anaknya (semua leaf di bawahnya)
+  const leavesOf = (i) => { if (!sum[i]) return [i]; const out = []; for (let k = i + 1; k < n && T[k].lvl > T[i].lvl; k++) if (!sum[k]) out.push(k); return out; };
+  const ancestorsOf = (i) => { const out = []; let L = T[i].lvl; for (let k = i - 1; k >= 0 && L > 0; k--) if (T[k].lvl < L) { out.push(k); L = T[k].lvl; } return out; };
+  const preds = T.map((_, i) => {
+    if (sum[i]) return [];
+    const list = [];
+    for (const k of [i, ...ancestorsOf(i)]) for (const p of leafPreds(k)) for (const j of leavesOf(byId.get(p.id))) if (j !== i) list.push({ j, type: p.type || "FS", lag: +p.lag || 0 });
+    return list;
+  });
+  // urutan topologis (Kahn) — tugas dalam siklus ditandai
+  const indeg = new Array(n).fill(0), succ = T.map(() => []);
+  preds.forEach((ps, i) => ps.forEach((p) => { indeg[i]++; succ[p.j].push({ i, type: p.type, lag: p.lag }); }));
+  const order = [], q = []; for (let i = 0; i < n; i++) if (!sum[i] && !indeg[i]) q.push(i);
+  while (q.length) { const i = q.shift(); order.push(i); for (const s of succ[i]) if (--indeg[s.i] === 0) q.push(s.i); }
+  const cyc = new Set(); for (let i = 0; i < n; i++) if (!sum[i] && !order.includes(i)) { cyc.add(i); order.push(i); C[i].err = "Ketergantungan melingkar"; }
+  const durOf = (i) => Math.max(0, Math.round(+T[i].dur || 0));
+  const finishFrom = (s, d) => (d <= 1 ? s : gsAddWork(s, d - 1));
+  const startFromFinish = (f, d) => (d <= 1 ? f : gsAddWork(f, -(d - 1)));
+  for (const i of order) {
+    const d = durOf(i);
+    let es = pStart;
+    const cons = T[i].cons != null ? Core.isoToDay(T[i].cons) : null;
+    if (cons != null) es = Math.max(es, gsNextWork(cons));
+    if (!cyc.has(i)) for (const p of preds[i]) {
+      const P = C[p.j]; if (P.es == null) continue; let c;
+      if (p.type === "SS") c = gsAddWork(P.es, p.lag);
+      else if (p.type === "FF") c = startFromFinish(gsAddWork(P.ef, p.lag), d);
+      else if (p.type === "SF") c = startFromFinish(gsAddWork(P.es, p.lag - 1), d);
+      else c = gsAddWork(P.ef, 1 + p.lag); // FS
+      es = Math.max(es, gsNextWork(c));
+    }
+    C[i].es = es; C[i].ef = finishFrom(es, d);
+  }
+  let pEnd = pStart; for (let i = 0; i < n; i++) if (!sum[i] && C[i].ef != null) pEnd = Math.max(pEnd, C[i].ef);
+  // backward pass
+  for (let k = order.length - 1; k >= 0; k--) {
+    const i = order[k], d = durOf(i); let lf = pEnd;
+    for (const s of succ[i]) {
+      const S = C[s.i]; if (S.ls == null) continue; let c;
+      if (s.type === "SS") c = finishFrom(gsAddWork(S.ls, -s.lag), d);
+      else if (s.type === "FF") c = gsAddWork(S.lf, -s.lag);
+      else if (s.type === "SF") c = gsAddWork(S.lf, -s.lag + 1);
+      else c = gsAddWork(S.ls, -(1 + s.lag));
+      lf = Math.min(lf, c);
+    }
+    C[i].lf = lf; C[i].ls = startFromFinish(lf, d);
+    C[i].float = gsWorkBetween(Math.min(C[i].es, C[i].ls), Math.max(C[i].es, C[i].ls)) - 1;
+    if (C[i].ls < C[i].es) C[i].float = -C[i].float;
+    C[i].crit = C[i].float <= 0;
+  }
+  // rollup tugas induk (dari bawah ke atas)
+  for (let i = n - 1; i >= 0; i--) if (sum[i]) {
+    let es = Infinity, ef = -Infinity, w = 0, wp = 0, crit = false;
+    for (let k = i + 1; k < n && T[k].lvl > T[i].lvl; k++) {
+      if (sum[k]) continue; const c = C[k]; if (c.es == null) continue;
+      es = Math.min(es, c.es); ef = Math.max(ef, c.ef); const ww = gsWeight(k, C); w += ww; wp += ww * (+T[k].pct || 0); crit = crit || c.crit;
+    }
+    C[i].es = es === Infinity ? pStart : es; C[i].ef = ef === -Infinity ? pStart : ef; C[i].pctRoll = w ? wp / w : 0; C[i].crit = crit;
+  }
+  g.calc = { C, pStart, pEnd, sum, byId, preds };
+  return g.calc;
+}
+function gsWeight(i, C) { const t = state.gantt.tasks[i]; if (t.w != null && t.w !== "" && +t.w > 0) return +t.w; return Math.max(1, +t.dur || 0); }
+const gsPct = (i) => { const c = state.gantt.calc; return c && c.sum[i] ? c.C[i].pctRoll || 0 : +state.gantt.tasks[i].pct || 0; };
+// ---------- predecessor teks "3FS+2; 5SS" ↔ data ----------
+function gsPredText(t) {
+  const c = state.gantt.calc; if (!c) return "";
+  return (t.pred || []).filter((p) => c.byId.has(p.id)).map((p) => (c.byId.get(p.id) + 1) + ((p.type || "FS") !== "FS" || p.lag ? (p.type || "FS") : "") + (p.lag ? (p.lag > 0 ? "+" : "") + p.lag : "")).join("; ");
+}
+function gsParsePred(txt) {
+  const T = state.gantt.tasks, out = [];
+  for (const part of String(txt).split(/[;,]/)) {
+    const m = /^\s*(\d+)\s*(FS|SS|FF|SF)?\s*([+-]\s*\d+)?\s*(h|hr|hari|d)?\s*$/i.exec(part);
+    if (!m) continue; const t = T[+m[1] - 1]; if (!t) continue;
+    out.push({ id: t.id, type: (m[2] || "FS").toUpperCase(), lag: m[3] ? +m[3].replace(/\s/g, "") : 0 });
+  }
+  return out;
+}
+// ---------- tautan elemen ----------
+const gsRefKey = (r) => r.file + "|" + r.gid;
+function gsLinkIndex() { // "file|gid" -> kode WBS tugas
+  const map = new Map();
+  for (const t of state.gantt.tasks) for (const r of t.links || []) map.set(gsRefKey(r), t.code);
+  return map;
+}
+function gsApplyLinks() {
+  if (!state.gantt) return;
+  const idx = gsLinkIndex();
+  for (const m of state.models) for (const [eid, e] of m.elements) {
+    const base = m.index && m.index.wbsByElement ? m.index.wbsByElement.get(eid) || null : e.wbs;
+    const linked = e.info ? idx.get(m.name + "|" + (e.info.globalId || "#" + eid)) : null;
+    e.wbs = linked || base;
+  }
+}
+function gsElementsOfTask(i) { // semua elemen yang tertaut ke tugas i (atau turunannya, untuk tugas induk)
+  const T = state.gantt.tasks, codes = new Set([T[i].code]), keys = new Set();
+  for (let k = i; k < T.length && (k === i || T[k].lvl > T[i].lvl); k++) { codes.add(T[k].code); for (const r of T[k].links || []) keys.add(gsRefKey(r)); }
+  const out = [];
+  for (const m of state.models) for (const [eid, e] of m.elements) {
+    const key = m.name + "|" + (e.info && e.info.globalId || "#" + eid);
+    const hit = keys.has(key) || (e.wbs && String(e.wbs).split(/[;,]/).some((c) => { c = Core.normWbs(c); return [...codes].some((x) => c === x || c.startsWith(x + ".")); }));
+    if (hit) out.push({ m, eid, e });
+  }
+  return out;
+}
+// ---------- terapkan ke Kolab (status, 4D, SPI) ----------
+function gsToCsv() {
+  const g = state.gantt, c = gsCalc(), T = g.tasks;
+  const headers = ["ID", "Activity ID", "WBS", "Nama Tugas", "Durasi", "Mulai", "Selesai", "Baseline Start", "Baseline Finish", "Bobot", "% Selesai", "Status", "Predecessors"];
+  const rows = T.map((t, i) => {
+    const C = c.C[i], pct = gsPct(i);
+    return [String(i + 1), "T" + t.id, t.code, t.name, (c.sum[i] ? gsWorkBetween(C.es, C.ef) : (+t.dur || 0)) + " hari", Core.dayToIso(C.es), Core.dayToIso(C.ef),
+      t.bs || "", t.bf || "", c.sum[i] ? "" : String(gsWeight(i, c.C)), Math.round(pct) + "%", pct >= 100 ? "Complete" : pct > 0 ? "In Progress" : "Not Started", gsPredText(t)];
+  });
+  return { headers, rows, delimiter: ";", fileName: "Jadwal Gantt Kolab" };
+}
+let gsApplyTimer = null;
+function gsApplySoon() { clearTimeout(gsApplyTimer); gsApplyTimer = setTimeout(gsApply, 250); }
+function gsApply() {
+  const g = state.gantt; if (!g || !g.tasks.length) return;
+  const csv = gsToCsv();
+  state.csv = csv; state.csvHistory = [{ name: csv.fileName, day: state.time.statusDay, csv }];
+  state.cols = Core.guessColumns(csv.headers);
+  state.dateOrder = "auto";
+  state.evmCal = g.cal; if ($("evm-cal")) $("evm-cal").value = g.cal;
+  fillColumnSelects();
+  $("csv-name").hidden = false; $("csv-name").textContent = `Jadwal Gantt Kolab · ${csv.rows.length} tugas · sinkron otomatis`;
+  rebuildSchedule(); recompute(); refresh(false);
+}
+{ const _rc = recompute; recompute = function () { gsApplyLinks(); return _rc.apply(this, arguments); }; }
+// ---------- impor dari CSV yang dimuat & dari model ----------
+function gsFromCsv() {
+  if (!state.csv || !state.schedule) { alert("Belum ada CSV jadwal yang dimuat."); return; }
+  const cols = state.cols, rows = state.csv.rows, ord = state.schedule.dateOrder;
+  const g = state.gantt, tasks = [];
+  const nameCol = cols.name >= 0 ? cols.name : state.csv.headers.findIndex((h) => /nama|name|task/i.test(h));
+  const predCol = state.csv.headers.findIndex((h) => /predecessor|pendahulu/i.test(h));
+  const idCol = cols.id;
+  let minS = Infinity; const tmp = [];
+  for (const r of rows) {
+    const code = Core.normWbs(r[cols.wbs]); if (!code) continue;
+    const s = Core.parseDate(r[cols.start], ord), f = Core.parseDate(r[cols.finish], ord);
+    if (s != null) minS = Math.min(minS, s);
+    tmp.push({ r, code, s, f });
+  }
+  if (!tmp.length) { alert("Kolom WBS di CSV kosong."); return; }
+  g.start = Core.dayToIso(minS === Infinity ? Core.todayDay() : minS);
+  const byRowNo = new Map();
+  tmp.forEach((x, i) => {
+    const t = { id: i + 1, name: (nameCol >= 0 ? x.r[nameCol] : "") || x.code, lvl: x.code.split(".").length - 1, code: x.code, dur: x.s != null && x.f != null ? Math.max(1, gsWorkBetween(x.s, x.f)) : 1,
+      cons: x.s != null ? Core.dayToIso(x.s) : null, pred: [], pct: cols.pct >= 0 ? Math.min(100, Math.max(0, Core.parseNumber(x.r[cols.pct]) || 0)) : (state.schedule.finish.has(x.code) ? 100 : 0),
+      w: cols.weight >= 0 ? Core.parseNumber(x.r[cols.weight]) || null : null, links: [] };
+    const bs = cols.bstart >= 0 ? Core.parseDate(x.r[cols.bstart], ord) : null, bf = cols.bfinish >= 0 ? Core.parseDate(x.r[cols.bfinish], ord) : null;
+    if (bs != null && bf != null) { t.bs = Core.dayToIso(bs); t.bf = Core.dayToIso(bf); }
+    tasks.push(t); byRowNo.set(String(i + 1), t);
+    if (idCol >= 0) byRowNo.set("id:" + Core.normId(x.r[idCol]), t);
+  });
+  if (predCol >= 0) tmp.forEach((x, i) => { const txt = x.r[predCol]; if (txt) for (const part of String(txt).split(/[;,]/)) { const m = /^\s*(\d+)\s*(FS|SS|FF|SF)?\s*([+-]\s*\d+)?/i.exec(part); const p = m && byRowNo.get(m[1]); if (p) tasks[i].pred.push({ id: p.id, type: (m[2] || "FS").toUpperCase(), lag: m[3] ? +m[3].replace(/\s/g, "") : 0 }); } });
+  g.tasks = tasks; gsNormalizeLevels();
+  g.active = null; gsCommit(); gsToast(`${tasks.length} tugas diimpor dari ${state.csv.fileName || "CSV"}. Tanggal mulai dari CSV dipakai sebagai batasan "mulai paling cepat".`);
+}
+function gsStoreys(m) { // eid -> nama lantai (IFCRELCONTAINEDINSPATIALSTRUCTURE + IFCRELAGGREGATES), plus elevasi lantai
+  const t = m.text, names = new Map(), elev = new Map(), of = new Map(), agg = [];
+  const each = (type, fn) => { const re = new RegExp("#(\\d+)\\s*=\\s*" + type + "\\s*\\(", "gi"); let mm; while ((mm = re.exec(t))) { let j = mm.index + mm[0].length - 1, inStr = false; for (let k = j; k < t.length; k++) { const ch = t.charCodeAt(k); if (ch === 39) inStr = !inStr; else if (ch === 59 && !inStr) { j = k; break; } } try { fn(+mm[1], Core.parseArgs(t.slice(mm.index + mm[0].length - 1, j))); } catch { /* lewati */ } } };
+  each("IFCBUILDINGSTOREY", (id, a) => { names.set(id, String(a[2] ?? "") || "Lantai"); elev.set(id, typeof a[9] === "number" ? a[9] : 0); });
+  const ids = (x) => (Array.isArray(x) ? x : []).map((r) => (r && r.ref !== undefined ? r.ref : null)).filter((v) => v != null);
+  each("IFCRELCONTAINEDINSPATIALSTRUCTURE", (id, a) => { const st = a[5] && a[5].ref; if (names.has(st)) for (const e of ids(a[4])) of.set(e, st); });
+  each("IFCRELAGGREGATES", (id, a) => { const p = a[4] && a[4].ref; if (p != null) agg.push([p, ids(a[5])]); });
+  for (let pass = 0; pass < 4; pass++) for (const [p, ch] of agg) if (of.has(p)) for (const c of ch) if (!of.has(c)) of.set(c, of.get(p));
+  return { names, elev, of };
+}
+const GS_CATS = [
+  { k: "pondasi", n: "Pekerjaan pondasi", re: /^IFC(FOOTING|PILE)/, d: 14, first: true },
+  { k: "kolom", n: "Kolom", re: /^IFCCOLUMN/, d: 7 },
+  { k: "balok", n: "Balok & pelat", re: /^IFC(BEAM|SLAB|MEMBER)/, d: 14 },
+  { k: "tangga", n: "Tangga & ramp", re: /^IFC(STAIR|RAMP)/, d: 5 },
+  { k: "dinding", n: "Dinding", re: /^IFC(WALL|CURTAINWALL|PLATE)/, d: 10 },
+  { k: "kusen", n: "Kusen pintu & jendela", re: /^IFC(DOOR|WINDOW)/, d: 5 },
+  { k: "mep", n: "Instalasi MEP", re: /^IFC(PIPE|DUCT|FLOW|CABLE|DISTRIBUTION|LIGHTFIXTURE|SANITARY|ELECTRIC|AIRTERMINAL|ENERGY|FIRE|PUMP|VALVE|TANK|UNITARY|BOILER|CHILLER|FAN|SWITCHING|OUTLET|PROTECTIVE|JUNCTION|ALARM|SENSOR|COMMUNICATIONS|AUDIO|LAMP|TRANSFORMER|MOTOR|COIL|COMPRESSOR|DAMPER|FILTER|HUMIDIFIER|SPACEHEATER|STACKTERMINAL|WASTETERMINAL)/, d: 10 },
+  { k: "atap", n: "Pekerjaan atap", re: /^IFCROOF/, d: 10 },
+  { k: "finish", n: "Finishing & lain-lain", re: /^IFC(RAILING|COVERING|FURNISHING|FURNITURE|BUILDINGELEMENTPROXY|CHIMNEY|SHADING)/, d: 7 },
+];
+function gsFromModel() {
+  if (!state.models.length) { alert("Muat model IFC dulu."); return; }
+  if (state.gantt.tasks.length && !confirm("Ganti jadwal Gantt sekarang dengan jadwal yang dibuat dari model?")) return;
+  const groups = new Map(); // storeyName -> {elev, cats: Map(k -> refs[])}
+  const minY = new Map();
+  for (const m of state.models) {
+    const S = gsStoreys(m);
+    for (const [eid, e] of m.elements) {
+      const type = (e.info && e.info.type) || ""; const cat = GS_CATS.find((c) => c.re.test(type)); if (!cat) continue;
+      let sid = S.of.get(eid), sname = sid != null ? S.names.get(sid) : null, sel = sid != null ? S.elev.get(sid) : null;
+      if (!sname) { sname = "Tanpa lantai"; sel = 1e9; }
+      if (!groups.has(sname)) groups.set(sname, { elev: sel, ys: [], cats: new Map() });
+      const G = groups.get(sname);
+      try { const b = elementBox(e); if (isFinite(b.min.y)) G.ys.push(b.min.y); } catch { /* tanpa geometri */ }
+      if (!G.cats.has(cat.k)) G.cats.set(cat.k, []);
+      G.cats.get(cat.k).push({ file: m.name, gid: e.info.globalId || "#" + eid });
+    }
+  }
+  const med = (a) => (a.length ? a.slice().sort((x, y) => x - y)[a.length >> 1] : 0);
+  const list = [...groups.entries()].map(([n, G]) => ({ n, G, y: med(G.ys) })).sort((a, b) => (a.G.elev === 1e9) - (b.G.elev === 1e9) || a.y - b.y);
+  const tasks = []; let id = 1;
+  const proj = { id: id++, name: (state.project && state.project.name) || "Proyek", lvl: 0, dur: 0, pred: [], pct: 0, links: [] }; tasks.push(proj);
+  // pondasi (dari lantai mana pun) dikumpulkan jadi satu tugas di depan
+  const fnd = []; for (const x of list) { const r = x.G.cats.get("pondasi"); if (r) { fnd.push(...r); x.G.cats.delete("pondasi"); } }
+  let fndTask = null;
+  if (fnd.length) { fndTask = { id: id++, name: "Pekerjaan pondasi", lvl: 1, dur: 14 + Math.ceil(fnd.length / 20), pred: [], pct: 0, links: fnd }; tasks.push(fndTask); }
+  let prevStruct = fndTask, roofTask = null, lastStruct = null;
+  for (const x of list) {
+    if (![...x.G.cats.values()].some((a) => a.length)) continue;
+    const st = { id: id++, name: x.n, lvl: 1, dur: 0, pred: [], pct: 0, links: [] }; tasks.push(st);
+    const T = {};
+    for (const c of GS_CATS) { const refs = x.G.cats.get(c.k); if (!refs || !refs.length || c.k === "pondasi") continue;
+      T[c.k] = { id: id++, name: c.n + " " + x.n, lvl: 2, dur: c.d + Math.ceil(refs.length / 20), pred: [], pct: 0, links: refs }; }
+    const dep = (a, b, type = "FS", lag = 0) => { if (T[a] && b) T[a].pred.push({ id: b.id, type, lag }); };
+    dep("kolom", prevStruct); if (!T.kolom) dep("balok", prevStruct);
+    dep("balok", T.kolom); dep("tangga", T.balok || T.kolom); dep("dinding", T.balok || T.kolom || prevStruct);
+    dep("kusen", T.dinding); dep("mep", T.dinding || T.balok, "SS", 3); dep("atap", T.balok || T.kolom || prevStruct); dep("finish", T.kusen || T.dinding || T.balok);
+    for (const c of GS_CATS) if (T[c.k]) tasks.push(T[c.k]);
+    for (const k of Object.keys(T)) if (!T[k].pred.length && prevStruct) T[k].pred.push({ id: prevStruct.id, type: "FS", lag: 0 });
+    prevStruct = T.balok || T.kolom || prevStruct; lastStruct = prevStruct;
+  }
+  const g = state.gantt; g.tasks = tasks; gsNormalizeLevels(); g.active = null;
+  if (!g.start) g.start = Core.dayToIso(Core.todayDay());
+  gsCommit();
+  const nl = tasks.reduce((t, x) => t + (x.links || []).length, 0);
+  gsToast(`Jadwal dibuat dari model: ${tasks.length} tugas, ${nl} elemen tertaut. Durasi adalah perkiraan awal — sesuaikan di tabel.`);
+}
+// ---------- UI ----------
+function gsToast(msg) { if (typeof toast === "function") toast(msg); else { const el = $("gs-msg"); if (el) { el.textContent = msg; clearTimeout(gsToast.t); gsToast.t = setTimeout(() => { el.textContent = ""; }, 6000); } } }
+function gsCommit(noApply) {
+  const g = state.gantt; gsNormalizeLevels(); gsRecode(); gsCalc(); gsSave(); gsRender();
+  if (g.auto && !noApply) gsApplySoon();
+}
+function gsVisibleRows() { const T = state.gantt.tasks, col = new Set(state.gantt.collapsed || []), out = []; let hideBelow = Infinity;
+  for (let i = 0; i < T.length; i++) { if (T[i].lvl > hideBelow) continue; hideBelow = Infinity; out.push(i); if (col.has(T[i].id) && gsIsSummary(i)) hideBelow = T[i].lvl; } return out; }
+function gsFmt(d) { return d == null ? "" : new Date(d * 864e5).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "2-digit", timeZone: "UTC" }); }
+function gsRender() {
+  const box = $("gs"); if (!box || box.hidden) return;
+  const g = state.gantt, c = g.calc || gsCalc(), T = g.tasks, rows = gsVisibleRows();
+  $("gs-start").value = g.start; $("gs-cal").value = g.cal; $("gs-auto").checked = !!g.auto; $("gs-zoom").value = String(g.zoom);
+  const act = T.findIndex((t) => t.id === g.active);
+  $("gs-sum").textContent = T.length ? `${T.length} tugas · ${gsFmt(c.pStart)} – ${gsFmt(c.pEnd)} · ${gsWorkBetween(c.pStart, c.pEnd)} hari kerja · progres ${fmtNum(T.length ? gsPct(0) : 0, 1)}%` : "Belum ada tugas.";
+  // tabel
+  const tb = $("gs-rows");
+  tb.innerHTML = rows.map((i) => {
+    const t = T[i], C = c.C[i], sm = c.sum[i], col = (g.collapsed || []).includes(t.id), nl = (t.links || []).length;
+    return `<tr data-gi="${i}" class="${t.id === g.active ? "on" : ""}${sm ? " sm" : ""}${C.crit && !sm ? " crit" : ""}">
+      <td class="no">${i + 1}</td>
+      <td class="nm"><div class="nmw" style="padding-left:${t.lvl * 14}px">${sm ? `<button class="tw" data-gtw="${t.id}">${col ? "▸" : "▾"}</button>` : `<span class="tw"></span>`}<input data-gf="name" value="${esc(t.name)}" title="${esc(t.code)} ${esc(t.name)}"></div></td>
+      <td class="mono cd">${esc(t.code)}</td>
+      <td>${sm ? `<span class="ro">${gsWorkBetween(C.es, C.ef)}h</span>` : `<input data-gf="dur" type="number" min="0" value="${+t.dur || 0}">`}</td>
+      <td>${sm ? `<span class="ro">${gsFmt(C.es)}</span>` : `<input data-gf="cons" type="date" value="${Core.dayToIso(C.es)}" title="${t.cons ? "Batasan mulai paling cepat: " + t.cons : "Dijadwalkan otomatis"}" class="${t.cons ? "cons" : ""}">`}</td>
+      <td class="ro">${gsFmt(C.ef)}</td>
+      <td>${sm ? "" : `<input data-gf="pred" value="${esc(gsPredText(t))}" title="No. tugas pendahulu, mis. 3 atau 3;4SS+2 (FS/SS/FF/SF, + jeda hari)">`}</td>
+      <td>${sm ? `<span class="ro">${Math.round(gsPct(i))}%</span>` : `<input data-gf="pct" type="number" min="0" max="100" value="${+t.pct || 0}">`}</td>
+      <td class="ln">${nl ? `<button class="btn link" data-gzoom="${i}" title="Tampilkan & zoom ke elemen">${nl}</button>` : sm ? "" : "–"}${C.err ? ` <span class="err" title="${esc(C.err)}">⚠</span>` : ""}</td></tr>`;
+  }).join("");
+  $("gs-link").setAttribute("aria-pressed", String(!!state.gsLinkMode));
+  $("gs-link").textContent = state.gsLinkMode ? "🔗 Mode tautkan: AKTIF (klik elemen)" : "🔗 Tautkan elemen";
+  $("gs-hint").textContent = act >= 0 ? `Tugas aktif: ${T[act].code} ${T[act].name} — ${(T[act].links || []).length} elemen tertaut${state.gsLinkMode ? ". Klik elemen di model untuk menautkan/melepas." : ""}` : "Klik baris untuk memilih tugas. Elemen tugas terpilih disorot di model.";
+  gsDrawChart(rows, c);
+}
+function gsDrawChart(rows, c) {
+  const cv = $("gs-cv"), wrap = $("gs-chart"), g = state.gantt, T = g.tasks, ppd = g.zoom;
+  const dpr = devicePixelRatio || 1, x0 = c.pStart - 7, x1 = c.pEnd + 21, W = Math.max(wrap.clientWidth, (x1 - x0) * ppd), H = 44 + rows.length * GS_ROW + 8;
+  cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + "px"; cv.style.height = H + "px";
+  const k = cv.getContext("2d"); k.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = (n) => cssVar(n) || "#888", ink = css("--ink"), mut = css("--muted"), line = css("--line"), acc = css("--accent"), late = css("--late") || "#d33", fin = css("--finish");
+  k.fillStyle = css("--panel"); k.fillRect(0, 0, W, H);
+  const X = (d) => (d - x0) * ppd;
+  // kolom non-kerja & grid
+  for (let d = x0; d <= x1; d++) {
+    if (!gsIsWork(d) && ppd >= 6) { k.fillStyle = css("--panel-2"); k.fillRect(X(d), 44, ppd, H - 44); }
+    const dt = new Date(d * 864e5), dom = dt.getUTCDate(), wd = gsWeekday(d);
+    if (dom === 1) { k.strokeStyle = line; k.beginPath(); k.moveTo(X(d) + .5, 0); k.lineTo(X(d) + .5, H); k.stroke();
+      k.fillStyle = ink; k.font = "600 11px system-ui"; k.fillText(dt.toLocaleDateString("id-ID", { month: "long", year: "numeric", timeZone: "UTC" }), X(d) + 4, 14); }
+    if ((ppd >= 14 && wd === 1) || (ppd >= 28)) { k.fillStyle = mut; k.font = "10px system-ui"; k.fillText(String(dom), X(d) + 2, 34); k.strokeStyle = line; k.globalAlpha = .5; k.beginPath(); k.moveTo(X(d) + .5, 24); k.lineTo(X(d) + .5, H); k.stroke(); k.globalAlpha = 1; }
+  }
+  k.strokeStyle = line; k.beginPath(); k.moveTo(0, 22.5); k.lineTo(W, 22.5); k.moveTo(0, 43.5); k.lineTo(W, 43.5); k.stroke();
+  const rowY = new Map(rows.map((i, r) => [i, 44 + r * GS_ROW]));
+  // garis panah ketergantungan
+  k.strokeStyle = mut; k.fillStyle = mut; k.lineWidth = 1;
+  rows.forEach((i) => { if (c.sum[i]) return; for (const p of T[i].pred || []) { const j = c.byId.get(p.id); if (j == null || !rowY.has(j)) continue;
+    const a = c.C[j], b = c.C[i], ya = rowY.get(j) + GS_ROW / 2, yb = rowY.get(i) + GS_ROW / 2, typ = p.type || "FS";
+    const xa = typ === "SS" || typ === "SF" ? X(a.es) : X(a.ef + 1), xb = typ === "FF" || typ === "SF" ? X(b.ef + 1) : X(b.es);
+    k.beginPath(); k.moveTo(xa, ya); const mx = Math.max(xa + 6, Math.min(xb - 6, xa + 6)); k.lineTo(mx, ya); k.lineTo(mx, yb); k.lineTo(xb - 1, yb); k.stroke();
+    k.beginPath(); k.moveTo(xb, yb); k.lineTo(xb - 5, yb - 3); k.lineTo(xb - 5, yb + 3); k.fill(); } });
+  // bar
+  rows.forEach((i) => {
+    const t = T[i], C = c.C[i], y = rowY.get(i), sm = c.sum[i], xs = X(C.es), xe = X(C.ef + 1), on = t.id === g.active;
+    if (on) { k.fillStyle = acc; k.globalAlpha = .08; k.fillRect(0, y, W, GS_ROW); k.globalAlpha = 1; }
+    if (t.bs && t.bf) { const bs = Core.isoToDay(t.bs), bf = Core.isoToDay(t.bf); k.fillStyle = mut; k.globalAlpha = .45; k.fillRect(X(bs), y + GS_ROW - 7, X(bf + 1) - X(bs), 3); k.globalAlpha = 1; }
+    if (sm) { k.fillStyle = ink; k.fillRect(xs, y + 8, Math.max(2, xe - xs), 5); k.beginPath(); k.moveTo(xs, y + 8); k.lineTo(xs + 5, y + 8); k.lineTo(xs, y + 17); k.fill(); k.beginPath(); k.moveTo(xe, y + 8); k.lineTo(xe - 5, y + 8); k.lineTo(xe, y + 17); k.fill(); return; }
+    if (!(+t.dur > 0)) { const cx0 = xs, cy0 = y + GS_ROW / 2; k.fillStyle = C.crit ? late : ink; k.beginPath(); k.moveTo(cx0, cy0 - 7); k.lineTo(cx0 + 7, cy0); k.lineTo(cx0, cy0 + 7); k.lineTo(cx0 - 7, cy0); k.fill(); k.fillStyle = ink; k.font = "10px system-ui"; k.fillText(gsFmt(C.es), cx0 + 10, cy0 + 4); return; }
+    k.fillStyle = C.crit ? late : acc; k.globalAlpha = .35; k.fillRect(xs, y + 6, xe - xs, GS_ROW - 12); k.globalAlpha = 1;
+    k.fillStyle = C.crit ? late : acc; k.fillRect(xs, y + 6, (xe - xs) * Math.min(100, +t.pct || 0) / 100, GS_ROW - 12);
+    if ((+t.pct || 0) >= 100) { k.fillStyle = fin; k.fillRect(xs, y + 6, xe - xs, GS_ROW - 12); }
+    k.strokeStyle = C.crit ? late : acc; k.strokeRect(xs + .5, y + 6.5, xe - xs - 1, GS_ROW - 13);
+    k.fillStyle = ink; k.font = "11px system-ui"; k.fillText(t.name + ((t.links || []).length ? "  ·  🔗" + t.links.length : ""), xe + 6, y + GS_ROW / 2 + 4);
+  });
+  // garis tanggal 4D & tanggal status
+  const sd = state.time.statusDay; k.strokeStyle = late; k.setLineDash([4, 3]); k.beginPath(); k.moveTo(X(sd) + .5, 22); k.lineTo(X(sd) + .5, H); k.stroke(); k.setLineDash([]);
+  if (state.time.day != null) { k.strokeStyle = acc; k.lineWidth = 2; k.beginPath(); k.moveTo(X(state.time.day) + .5, 22); k.lineTo(X(state.time.day) + .5, H); k.stroke(); k.lineWidth = 1;
+    k.fillStyle = acc; k.font = "600 10px system-ui"; k.fillText("4D " + gsFmt(state.time.day), X(state.time.day) + 4, 42); }
+  cv._map = { x0, ppd, rowY, rows };
+}
+function gsActivate(i, fly) {
+  const g = state.gantt, t = g.tasks[i]; if (!t) return;
+  g.active = t.id; gsSave(); gsRender(); applyVisuals();
+  const M = $("gs-cv")._map, ch = $("gs-chart"); if (M && ch && g.calc) { const x = (g.calc.C[i].es - M.x0) * M.ppd; if (x < ch.scrollLeft || x > ch.scrollLeft + ch.clientWidth - 60) ch.scrollLeft = Math.max(0, x - 40); }
+  if (fly) gsZoomTo(i);
+}
+function gsZoomTo(i) {
+  const els = gsElementsOfTask(i); if (!els.length) { gsToast("Belum ada elemen tertaut ke tugas ini."); return; }
+  const b = new THREE.Box3(); for (const x of els) b.union(elementBox(x.e));
+  const ctr = b.getCenter(new THREE.Vector3()), r = b.getSize(new THREE.Vector3()).length() / 2; focusPoint(ctr, Math.max(r * .6, 2));
+}
+// sorot elemen tugas aktif di model
+{ const _av = applyVisuals; applyVisuals = function () { _av.apply(this, arguments); const g = state.gantt; if (!g || g.active == null || !$("gs") || $("gs").hidden) return;
+  const i = g.tasks.findIndex((t) => t.id === g.active); if (i < 0) return;
+  for (const x of gsElementsOfTask(i)) for (const mesh of x.e.meshes) { mesh.material = MAT.selected; mesh.visible = true; mesh.renderOrder = 0; }
+  requestRender(); }; }
+// klik elemen: mode tautkan → toggle tautan; mode biasa → tampilkan tugasnya di Gantt
+{ const _sa = selectAt; selectAt = function (ev) {
+  const g = state.gantt;
+  if (state.gsLinkMode && g && g.active != null && $("gs") && !$("gs").hidden) {
+    const hit = pick(ev); if (!hit) return; const m = state.models.find((x) => x.uid === hit.uid), e = m && m.elements.get(hit.eid); if (!e) return;
+    const ref = { file: m.name, gid: e.info.globalId || "#" + hit.eid }, key = gsRefKey(ref), t = g.tasks.find((x) => x.id === g.active);
+    const was = (t.links || []).some((r) => gsRefKey(r) === key);
+    for (const o of g.tasks) o.links = (o.links || []).filter((r) => gsRefKey(r) !== key);
+    if (!was) t.links.push(ref);
+    gsToast(was ? `${e.info.name || e.info.type} dilepas dari ${t.code}.` : `${e.info.name || e.info.type} ditautkan ke ${t.code} ${t.name}.`);
+    gsCommit(); recompute(); applyVisuals(); return;
+  }
+  _sa.apply(this, arguments);
+  if (g && state.selected && $("gs") && !$("gs").hidden) { const m = state.models.find((x) => x.uid === state.selected.uid), e = m && m.elements.get(state.selected.eid);
+    if (e && e.wbs) { const code = Core.normWbs(String(e.wbs).split(/[;,]/)[0]); const i = g.tasks.findIndex((t) => t.code === code); if (i >= 0) { g.active = g.tasks[i].id; gsRender(); const tr = document.querySelector(`#gs-rows tr[data-gi="${i}"]`); if (tr) tr.scrollIntoView({ block: "nearest" }); } } }
+}; }
+{ const _rt = renderTimeline; renderTimeline = function () { _rt.apply(this, arguments); if ($("gs") && !$("gs").hidden && state.gantt && state.gantt.calc) gsDrawChart(gsVisibleRows(), state.gantt.calc); }; }
+function gsToggle(show) {
+  const box = $("gs"); show = show ?? box.hidden; box.hidden = !show; document.querySelector(".main").classList.toggle("gs-open", show);
+  $("btn-gantt").setAttribute("aria-pressed", String(show)); if (show) { if (!state.gantt || state.gantt._key !== GS_KEY()) gsLoad(); gsCalc(); gsRender(); } else state.gsLinkMode = false;
+  applyVisuals();
+}
+function gsInsert(after, lvl) { const g = state.gantt, t = { id: gsId(), name: "Tugas baru", lvl: lvl ?? (after >= 0 ? g.tasks[after].lvl : 0), dur: 5, pred: [], pct: 0, links: [] };
+  if (after >= 0 && !gsIsSummary(after) && g.tasks[after] && lvl == null) t.pred = [{ id: g.tasks[after].id, type: "FS", lag: 0 }];
+  g.tasks.splice(after + 1, 0, t); g.active = t.id; gsCommit(); setTimeout(() => { const inp = document.querySelector(`#gs-rows tr[data-gi="${after + 1}"] input[data-gf="name"]`); if (inp) { inp.focus(); inp.select(); } }, 30); }
+function gsBlock(i) { const T = state.gantt.tasks; let e = i + 1; while (e < T.length && T[e].lvl > T[i].lvl) e++; return [i, e]; }
+function gsAct() { const g = state.gantt; return g.tasks.findIndex((t) => t.id === g.active); }
+function gsOp(op) {
+  const g = state.gantt, T = g.tasks, i = gsAct();
+  if (op === "add") return gsInsert(i >= 0 ? gsBlock(i)[1] - 1 : T.length - 1, i >= 0 ? T[i].lvl : 0);
+  if (op === "addsub") { if (i < 0) return gsInsert(T.length - 1, 0); return gsInsert(i, T[i].lvl + 1); }
+  if (i < 0) { gsToast("Pilih tugas dulu."); return; }
+  if (op === "del") { const [a, b] = gsBlock(i); const n = b - a; if (n > 1 && !confirm(`Hapus tugas ini beserta ${n - 1} sub-tugasnya?`)) return; const gone = new Set(T.slice(a, b).map((t) => t.id)); T.splice(a, n); for (const t of T) t.pred = (t.pred || []).filter((p) => !gone.has(p.id)); g.active = T[Math.min(a, T.length - 1)] ? T[Math.min(a, T.length - 1)].id : null; }
+  else if (op === "in") { if (i > 0 && T[i].lvl <= T[i - 1].lvl) { const [a, b] = gsBlock(i); for (let k = a; k < b; k++) T[k].lvl++; } }
+  else if (op === "out") { if (T[i].lvl > 0) { const [a, b] = gsBlock(i); for (let k = a; k < b; k++) T[k].lvl--; } }
+  else if (op === "up" || op === "down") { const [a, b] = gsBlock(i); const blk = T.slice(a, b);
+    if (op === "up") { let p = a - 1; while (p > 0 && T[p].lvl > T[i].lvl) p--; if (p < 0 || T[p].lvl !== T[i].lvl) return; T.splice(a, b - a); T.splice(p, 0, ...blk); }
+    else { if (b >= T.length || T[b].lvl !== T[i].lvl) return; const [, b2] = gsBlock(b); T.splice(a, b - a); T.splice(a + (b2 - b), 0, ...blk); } }
+  else if (op === "unlink") { const n = (T[i].links || []).length; T[i].links = []; gsToast(`${n} tautan elemen dilepas dari ${T[i].code}.`); }
+  else if (op === "linksel") { if (!state.selected) { gsToast("Pilih elemen di model dulu (mode Pilih)."); return; } const m = state.models.find((x) => x.uid === state.selected.uid), e = m && m.elements.get(state.selected.eid);
+    if (e) { const ref = { file: m.name, gid: e.info.globalId || "#" + state.selected.eid }; for (const o of T) o.links = (o.links || []).filter((r) => gsRefKey(r) !== gsRefKey(ref)); T[i].links.push(ref); gsToast("Elemen ditautkan ke " + T[i].code); } }
+  else if (op === "baseline") { const c = gsCalc(); T.forEach((t, k) => { t.bs = Core.dayToIso(c.C[k].es); t.bf = Core.dayToIso(c.C[k].ef); }); gsToast("Baseline disimpan dari jadwal sekarang (dipakai untuk SPI/EVM)."); }
+  gsCommit(); recompute(); applyVisuals();
+}
+function gsExportCsv() { const csv = gsToCsv(); download(`Jadwal-Gantt_${stamp()}.csv`, Core.toCsv(csv.headers, csv.rows), "text/csv"); }
+function gsExportJson() { const { holiSet, calc, _key, ...rest } = state.gantt; download(`Jadwal-Gantt_${stamp()}.kolabgantt.json`, JSON.stringify({ app: "kolab-gantt", version: 1, ...rest }, null, 1), "application/json"); }
+async function gsImportJson(file) { try { const d = JSON.parse(await file.text()); if (!Array.isArray(d.tasks)) throw new Error("bukan file jadwal Gantt"); state.gantt = Object.assign(gsNew(), d); state.gantt.holiSet = new Set((state.gantt.holidays || []).map(Core.isoToDay).filter((x) => x != null)); gsCommit(); recompute(); gsToast(`${d.tasks.length} tugas dimuat dari ${file.name}.`); } catch (e) { alert("File jadwal tidak bisa dibaca: " + e.message); } }
+(function gsUI() {
+  const css = document.createElement("style");
+  css.textContent = `.main.gs-open{grid-template-rows:minmax(160px,1fr) var(--gs-h,42vh);grid-template-columns:360px minmax(0,1fr)}.main.gs-open .side{grid-row:1/3}
+#gs{grid-column:2;grid-row:2;min-width:0;overflow:hidden;display:flex;flex-direction:column;min-height:0;border-top:1px solid var(--line);background:var(--panel);position:relative}
+#gs .gs-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line)}
+#gs .gs-bar .btn{padding:3px 9px;font-size:12px}#gs .gs-bar label{font-size:12px;color:var(--muted);display:inline-flex;gap:4px;align-items:center}
+#gs .gs-bar input,#gs .gs-bar select{font-size:12px;padding:2px 4px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+#gs .gs-body{flex:1;min-height:0;display:grid;align-items:start;grid-template-columns:minmax(660px,56%) minmax(0,1fr);overflow:auto}#gs-chart{min-width:0;overflow-x:auto;overflow-y:hidden}
+#gs table{border-collapse:collapse;font-size:12px;width:100%;table-layout:fixed}#gs thead th{position:sticky;top:0;background:var(--panel-2);height:44px;font-weight:600;text-align:left;padding:0 4px;border-bottom:1px solid var(--line);z-index:1;font-size:11px;color:var(--muted)}
+#gs tbody tr{height:${GS_ROW}px}#gs tbody td{border-bottom:1px solid var(--line);padding:0 3px;white-space:nowrap;overflow:hidden}
+#gs tbody tr.on{background:color-mix(in srgb,var(--accent) 12%,transparent)}#gs tbody tr.sm td{font-weight:600}#gs tbody tr.crit td.no{color:var(--late,#c33);font-weight:700}
+#gs td input{width:100%;height:22px;margin:0;border:0;border-radius:3px;background:transparent;font:inherit;color:inherit;padding:0 2px;box-shadow:none;min-height:0}#gs tbody tr{max-height:${GS_ROW}px}#gs td input:focus{outline:1px solid var(--accent);background:var(--panel)}#gs td input.cons{color:var(--accent);font-weight:600}
+#gs .nmw{display:flex;align-items:center;gap:2px;min-width:0}#gs .nmw input{min-width:0;flex:1}#gs .tw{width:14px;flex:none;border:0;background:none;cursor:pointer;color:var(--muted);padding:0}#gs td.no{color:var(--muted);text-align:right}#gs td.cd{color:var(--muted);font-size:11px}#gs .ro{color:var(--muted)}
+#gs-cv{display:block;cursor:crosshair}#gs .gs-hint{font-size:11px;color:var(--muted);padding:3px 10px;border-top:1px solid var(--line);display:flex;gap:12px;justify-content:space-between}
+#gs-resize{position:absolute;top:-4px;left:0;right:0;height:8px;cursor:ns-resize;z-index:2}#btn-gantt[aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}
+#gs-link[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}`;
+  document.head.appendChild(css);
+  const btn = document.createElement("button"); btn.id = "btn-gantt"; btn.type = "button"; btn.className = "btn sm"; btn.textContent = "📅 Jadwal (Gantt)"; btn.setAttribute("aria-pressed", "false"); btn.title = "Penjadwal sederhana seperti MS Project, tersinkron dengan model";
+  document.querySelector(".topbar .seg").after(btn); btn.onclick = () => gsToggle();
+  const box = document.createElement("section"); box.id = "gs"; box.hidden = true; box.setAttribute("aria-label", "Jadwal Gantt");
+  box.innerHTML = `<div id="gs-resize" title="Seret untuk mengubah tinggi panel"></div>
+  <div class="gs-bar">
+    <button class="btn" data-gop="add" title="Tambah tugas di bawah tugas terpilih (Insert)">+ Tugas</button><button class="btn" data-gop="addsub" title="Tambah sub-tugas">+ Sub-tugas</button>
+    <button class="btn" data-gop="out" title="Naikkan tingkat (Alt+←)">⇤</button><button class="btn" data-gop="in" title="Turunkan tingkat / jadikan sub-tugas (Alt+→)">⇥</button>
+    <button class="btn" data-gop="up" title="Pindah ke atas">↑</button><button class="btn" data-gop="down" title="Pindah ke bawah">↓</button><button class="btn" data-gop="del" title="Hapus tugas">Hapus</button>
+    <span style="width:8px"></span>
+    <button class="btn" id="gs-link" title="Aktifkan lalu klik elemen di model untuk menautkan/melepas dari tugas terpilih">🔗 Tautkan elemen</button>
+    <button class="btn" data-gop="linksel" title="Tautkan elemen yang sedang dipilih ke tugas terpilih">+ Elemen terpilih</button><button class="btn" data-gop="unlink" title="Lepas semua tautan elemen tugas terpilih">Lepas tautan</button>
+    <span style="width:8px"></span>
+    <button class="btn" id="gs-frommodel" title="Buat jadwal otomatis dari model: per lantai × jenis elemen, lengkap dengan tautan & urutan kerja">⚙ Buat dari model</button>
+    <button class="btn" id="gs-fromcsv" title="Ubah CSV MS Project yang sedang dimuat menjadi jadwal Gantt yang bisa diedit">⇪ Dari CSV dimuat</button>
+    <button class="btn" data-gop="baseline" title="Simpan tanggal sekarang sebagai baseline">Set baseline</button>
+    <span style="flex:1"></span>
+    <label>Mulai proyek <input type="date" id="gs-start"></label>
+    <label>Hari kerja <select id="gs-cal"><option value="ms">Senin–Sabtu</option><option value="mf">Senin–Jumat</option><option value="all">Semua hari</option></select></label>
+    <label>Skala <select id="gs-zoom"><option value="28">Hari</option><option value="14">Minggu</option><option value="5">Bulan</option><option value="2">Kuartal</option></select></label>
+    <label title="Setiap perubahan langsung diterapkan ke status, 4D & SPI model"><input type="checkbox" id="gs-auto"> Sinkron otomatis</label>
+    <button class="btn" id="gs-apply" title="Terapkan jadwal ke model sekarang">Terapkan</button>
+    <button class="btn" id="gs-csv" title="Ekspor CSV (format kolom MS Project)">CSV</button><button class="btn" id="gs-save" title="Simpan file jadwal">Simpan</button><button class="btn" id="gs-open" title="Buka file jadwal">Buka</button><input type="file" id="gs-in" accept=".json" hidden>
+    <button class="btn" id="gs-close" title="Tutup panel">✕</button>
+  </div>
+  <div class="gs-body" id="gs-body">
+    <table><colgroup><col style="width:30px"><col><col style="width:46px"><col style="width:46px"><col style="width:112px"><col style="width:70px"><col style="width:70px"><col style="width:40px"><col style="width:46px"></colgroup>
+    <thead><tr><th>No</th><th>Nama tugas</th><th>WBS</th><th>Durasi</th><th>Mulai</th><th>Selesai</th><th>Pendahulu</th><th>%</th><th>Elemen</th></tr></thead><tbody id="gs-rows"></tbody></table>
+    <div id="gs-chart"><canvas id="gs-cv"></canvas></div>
+  </div>
+  <div class="gs-hint"><span id="gs-hint"></span><span id="gs-msg" style="color:var(--accent)"></span><span id="gs-sum" class="num"></span></div>`;
+  document.querySelector(".main").appendChild(box);
+  box.addEventListener("click", (ev) => {
+    const t = ev.target.closest("[data-gop],[data-gtw],[data-gzoom],tr[data-gi]"); if (!t) return;
+    if (t.dataset.gop) return gsOp(t.dataset.gop);
+    if (t.dataset.gtw) { const g = state.gantt, id = +t.dataset.gtw, s = new Set(g.collapsed || []); s.has(id) ? s.delete(id) : s.add(id); g.collapsed = [...s]; gsSave(); gsRender(); return; }
+    if (t.dataset.gzoom) { gsActivate(+t.dataset.gzoom, true); return; }
+    if (t.dataset.gi && state.gantt.active !== state.gantt.tasks[+t.dataset.gi].id) gsActivate(+t.dataset.gi, false);
+  });
+  box.addEventListener("change", (ev) => {
+    const inp = ev.target, tr = inp.closest("tr[data-gi]"); if (!tr || !inp.dataset.gf) return;
+    const i = +tr.dataset.gi, t = state.gantt.tasks[i], f = inp.dataset.gf;
+    if (f === "name") t.name = inp.value.trim() || "Tugas";
+    else if (f === "dur") t.dur = Math.max(0, Math.round(+inp.value || 0));
+    else if (f === "pct") t.pct = Math.max(0, Math.min(100, +inp.value || 0));
+    else if (f === "pred") { const p = gsParsePred(inp.value); if (p.some((x) => x.id === t.id)) { gsToast("Tugas tidak bisa bergantung pada dirinya sendiri."); return gsRender(); } t.pred = p; }
+    else if (f === "cons") t.cons = inp.value || null;
+    gsCommit(); recompute(); applyVisuals();
+  });
+  box.addEventListener("keydown", (ev) => {
+    if (ev.target.closest("input[data-gf]") && ev.key === "Enter") { ev.target.blur(); return; }
+    if (ev.altKey && ev.key === "ArrowRight") { ev.preventDefault(); gsOp("in"); } else if (ev.altKey && ev.key === "ArrowLeft") { ev.preventDefault(); gsOp("out"); } else if (ev.key === "Insert") { ev.preventDefault(); gsOp("add"); }
+  });
+  $("gs-link").onclick = () => { if (state.gantt.active == null) { gsToast("Pilih tugas dulu, lalu klik elemen di model."); return; } state.gsLinkMode = !state.gsLinkMode; if (state.gsLinkMode) { setTool("select"); if (state.mode === "finish") setMode("all"); } gsRender(); };
+  $("gs-frommodel").onclick = gsFromModel; $("gs-fromcsv").onclick = () => { if (state.gantt.tasks.length && !confirm("Ganti jadwal Gantt sekarang dengan isi CSV yang dimuat?")) return; gsFromCsv(); };
+  $("gs-start").onchange = (ev) => { state.gantt.start = ev.target.value || Core.dayToIso(Core.todayDay()); gsCommit(); };
+  $("gs-cal").onchange = (ev) => { state.gantt.cal = ev.target.value; gsCommit(); };
+  $("gs-zoom").onchange = (ev) => { state.gantt.zoom = +ev.target.value; gsSave(); gsRender(); };
+  $("gs-auto").onchange = (ev) => { state.gantt.auto = ev.target.checked; gsSave(); if (state.gantt.auto) gsApply(); };
+  $("gs-apply").onclick = () => { gsApply(); gsToast("Jadwal diterapkan ke model (status, Jadwal 4D, SPI)."); };
+  $("gs-csv").onclick = gsExportCsv; $("gs-save").onclick = gsExportJson; $("gs-open").onclick = () => $("gs-in").click();
+  $("gs-in").onchange = (ev) => { const f = ev.target.files[0]; if (f) gsImportJson(f); ev.target.value = ""; };
+  $("gs-close").onclick = () => gsToggle(false);
+  // klik di header bagan = setel tanggal 4D; seret bar = geser mulai (batasan); seret ujung kanan = ubah durasi
+  const cv = $("gs-cv"); let drag = null;
+  const dayAt = (ev) => { const r = cv.getBoundingClientRect(), M = cv._map; return { d: Math.floor((ev.clientX - r.left) / M.ppd) + M.x0, y: ev.clientY - r.top }; };
+  cv.addEventListener("pointerdown", (ev) => {
+    const M = cv._map; if (!M) return; const { d, y } = dayAt(ev), c = state.gantt.calc;
+    if (y < 44) { if (state.schedule && state.schedule.range) { if (state.mode !== "4d") setMode("4d"); setDay(d); gsRender(); } return; }
+    const r = Math.floor((y - 44) / GS_ROW), i = M.rows[r]; if (i == null) return;
+    gsActivate(i, false); if (c.sum[i]) return;
+    const C = c.C[i], xR = (C.ef + 1 - M.x0) * M.ppd, px = ev.clientX - cv.getBoundingClientRect().left;
+    if (d >= C.es - 1 && d <= C.ef + 1) { drag = { i, d0: d, mode: Math.abs(px - xR) < 7 ? "dur" : "move", es: C.es, ef: C.ef }; cv.setPointerCapture(ev.pointerId); }
+  });
+  cv.addEventListener("pointermove", (ev) => { const M = cv._map; if (!M) return; const { d, y } = dayAt(ev);
+    if (!drag) { const r = Math.floor((y - 44) / GS_ROW), i = M.rows[r], c = state.gantt.calc; cv.style.cursor = y < 44 ? "col-resize" : (i != null && !c.sum[i] && Math.abs(ev.clientX - cv.getBoundingClientRect().left - (c.C[i].ef + 1 - M.x0) * M.ppd) < 7) ? "ew-resize" : "default"; return; }
+    const t = state.gantt.tasks[drag.i], dd = d - drag.d0;
+    if (drag.mode === "move") t.cons = Core.dayToIso(gsNextWork(drag.es + dd)); else t.dur = Math.max(1, gsWorkBetween(drag.es, Math.max(drag.es, drag.ef + dd)));
+    gsCalc(); gsRender(); });
+  cv.addEventListener("pointerup", () => { if (drag) { drag = null; gsCommit(); recompute(); applyVisuals(); } });
+  // ubah tinggi panel
+  let rz = null; $("gs-resize").addEventListener("pointerdown", (ev) => { rz = { y: ev.clientY, h: box.getBoundingClientRect().height }; ev.target.setPointerCapture(ev.pointerId); });
+  $("gs-resize").addEventListener("pointermove", (ev) => { if (!rz) return; const h = Math.max(140, Math.min(innerHeight - 220, rz.h - (ev.clientY - rz.y))); document.querySelector(".main").style.setProperty("--gs-h", h + "px"); });
+  $("gs-resize").addEventListener("pointerup", () => { rz = null; });
+  new ResizeObserver(() => { if (!box.hidden && state.gantt && state.gantt.calc) gsDrawChart(gsVisibleRows(), state.gantt.calc); }).observe(box);
+  gsLoad();
+})();
+Object.assign(window.__bpv || {}, { gsToggle, gsFromModel, gsFromCsv, gsApply, gsCalc, gsOp });
+
 // ---------- start ----------
 if (!window.__BPV_POPUP) {
   boot();
